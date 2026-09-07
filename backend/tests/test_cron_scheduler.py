@@ -448,3 +448,56 @@ class CronExecutorThreadingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(run_threads), 1)
         self.assertNotEqual(run_threads[0], threading.current_thread().name)
+
+
+class CronOffloadedRunTests(unittest.IsolatedAsyncioTestCase):
+    """What the cron path hands the queue, and what it does with the answer."""
+
+    async def _dispatch_kwargs(self, result: object) -> dict:
+        scheduler = CronScheduler()
+        workflow = SimpleNamespace(
+            id=uuid.uuid4(),
+            owner_id=uuid.uuid4(),
+            name="Cron workflow",
+            nodes=[],
+            edges=[],
+        )
+        db = SimpleNamespace(add=lambda row: None, commit=AsyncMock())
+        dispatch = AsyncMock(return_value=result)
+        with (
+            patch(
+                "app.services.cron_scheduler.collect_referenced_workflows",
+                AsyncMock(return_value={}),
+            ),
+            patch(
+                "app.services.cron_scheduler.get_credentials_context", AsyncMock(return_value={})
+            ),
+            patch(
+                "app.services.cron_scheduler.get_global_variables_context",
+                AsyncMock(return_value={}),
+            ),
+            patch("app.services.cron_scheduler.dispatch_workflow", dispatch),
+            patch(
+                "app.services.cron_scheduler.upsert_workflow_analytics_snapshot", AsyncMock()
+            ) as snapshot,
+            patch(
+                "app.services.cron_scheduler._persist_global_variables_from_execution", AsyncMock()
+            ),
+        ):
+            await scheduler._execute_workflow(db, workflow)
+        return {"dispatch": dispatch, "snapshot": snapshot, "workflow": workflow}
+
+    async def test_an_offloaded_cron_run_carries_the_same_trigger_source(self) -> None:
+        """History said 'schedule' when offloaded and 'cron' when not - one run, two labels."""
+        from app.services.cluster.run_history import from_summary
+
+        called = await self._dispatch_kwargs(from_summary({"status": "success", "outputs": {}}))
+        dispatch: AsyncMock = called["dispatch"]
+        self.assertEqual(dispatch.await_args.kwargs["trigger_source"], "cron")
+
+    async def test_a_run_recorded_elsewhere_is_not_written_again_here(self) -> None:
+        from app.services.cluster.run_history import from_summary
+
+        called = await self._dispatch_kwargs(from_summary({"status": "error", "outputs": {}}))
+        snapshot: AsyncMock = called["snapshot"]
+        snapshot.assert_not_awaited()

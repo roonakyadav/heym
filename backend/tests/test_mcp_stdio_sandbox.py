@@ -35,7 +35,13 @@ def _flag_value(argv: list[str], flag: str) -> str | None:
 
 class SandboxModeTests(unittest.TestCase):
     def test_defaults_to_auto(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
+        # The setting is pinned as well as the variable: a developer's own .env
+        # is read into settings at import, and "the default" must mean the
+        # default here, not whatever this machine happens to configure.
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("app.services.mcp_stdio_sandbox.settings.mcp_stdio_sandbox", "auto"),
+        ):
             os.environ.pop("HEYM_MCP_STDIO_SANDBOX", None)
             self.assertEqual(sandbox_mode(), "auto")
 
@@ -62,13 +68,17 @@ class SandboxDecouplingTests(unittest.TestCase):
         self.addCleanup(reset_docker_available_cache)
 
     def test_python_tool_subprocess_does_not_downgrade_mcp_stdio(self) -> None:
-        with patch.dict(os.environ, {"HEYM_PYTHON_TOOL_SANDBOX": "subprocess"}):
+        with (
+            patch.dict(os.environ, {"HEYM_PYTHON_TOOL_SANDBOX": "subprocess"}),
+            patch("app.services.mcp_stdio_sandbox.settings.mcp_stdio_sandbox", "auto"),
+        ):
             os.environ.pop("HEYM_MCP_STDIO_SANDBOX", None)
             self.assertEqual(sandbox_mode(), "auto")
 
     def test_python_tool_subprocess_still_fails_closed_without_docker(self) -> None:
         with (
             patch.dict(os.environ, {"HEYM_PYTHON_TOOL_SANDBOX": "subprocess"}),
+            patch("app.services.mcp_stdio_sandbox.settings.mcp_stdio_sandbox", "auto"),
             patch("app.services.mcp_stdio_sandbox.docker_available", return_value=False),
         ):
             os.environ.pop("HEYM_MCP_STDIO_SANDBOX", None)

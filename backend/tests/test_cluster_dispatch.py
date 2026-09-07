@@ -1,6 +1,7 @@
 """When a run is kept in-process, and how an offloaded result comes back."""
 
 import asyncio
+import logging
 import unittest
 import uuid
 from types import SimpleNamespace
@@ -433,3 +434,245 @@ class ClaimedRunContextTests(unittest.IsolatedAsyncioTestCase):
         )
         persist: AsyncMock = claimed["persist_globals"]  # type: ignore[assignment]
         persist.assert_not_awaited()
+
+
+class RetiredRunTests(unittest.IsolatedAsyncioTestCase):
+    """A run the queue retired must still reach the user's execution history.
+
+    offloaded_error() reported history_written=True, so every trigger call site
+    took the "the instance that ran it already wrote history" branch for a run
+    no instance ever ran. Nothing was written, the reason was dropped, and the
+    only trace was one INFO line saying "status: error".
+    """
+
+    async def test_a_queue_failure_is_not_reported_by_any_instance(self) -> None:
+        execution_id = uuid.uuid4()
+        bus_module.run_result_bus.register(execution_id).set()
+        with patch(
+            "app.services.cluster.dispatch.run_queue.read_terminal_result",
+            new=AsyncMock(return_value=("failed", None, "boom")),
+        ):
+            result = await wait_for_result(execution_id, timeout_seconds=1.0)
+        self.assertFalse(result.reported)
+
+    async def test_the_reason_survives_where_history_can_show_it(self) -> None:
+        execution_id = uuid.uuid4()
+        bus_module.run_result_bus.register(execution_id).set()
+        with patch(
+            "app.services.cluster.dispatch.run_queue.read_terminal_result",
+            new=AsyncMock(return_value=("skipped_late", None, "too late")),
+        ):
+            result = await wait_for_result(execution_id, timeout_seconds=1.0)
+        self.assertEqual(result.outputs, {"error": "too late"})
+
+    async def test_a_reported_run_is_left_to_the_instance_that_ran_it(self) -> None:
+        execution_id = uuid.uuid4()
+        bus_module.run_result_bus.register(execution_id).set()
+        with patch(
+            "app.services.cluster.dispatch.run_queue.read_terminal_result",
+            new=AsyncMock(return_value=("done", {"status": "error", "outputs": {}}, None)),
+        ):
+            result = await wait_for_result(execution_id, timeout_seconds=1.0)
+        self.assertTrue(result.reported)
+
+    async def test_a_timeout_is_left_to_the_run_that_may_still_be_going(self) -> None:
+        """The live run still owns this execution id; a second row would collide."""
+        execution_id = uuid.uuid4()
+        with patch(
+            "app.services.cluster.dispatch.run_queue.read_terminal_result",
+            new=AsyncMock(return_value=("claimed", None, None)),
+        ):
+            result = await wait_for_result(execution_id, timeout_seconds=0.05)
+        self.assertTrue(result.reported)
+
+    async def _dispatch(self, waited: object) -> AsyncMock:
+        from app.services.cluster.dispatch import dispatch_workflow
+
+        record = AsyncMock(return_value=True)
+        with (
+            patch("app.services.cluster.dispatch.settings.cluster_enabled", True),
+            patch("app.services.cluster.dispatch.identity.is_main", return_value=False),
+            patch(
+                "app.services.cluster.dispatch.run_queue.enqueue",
+                new=AsyncMock(return_value="worker-1"),
+            ),
+            patch("app.services.cluster.dispatch.run_queue.notify_queue", new=AsyncMock()),
+            patch(
+                "app.services.cluster.dispatch.wait_for_result",
+                new=AsyncMock(return_value=waited),
+            ),
+            patch("app.services.cluster.dispatch.record_failed_dispatch", record),
+        ):
+            await dispatch_workflow(
+                workflow_id=uuid.uuid4(),
+                nodes=[{"type": "http", "data": {}}],
+                edges=[],
+                inputs={"triggered_by": "cron"},
+                trigger_source="cron",
+            )
+        return record
+
+    async def test_a_run_no_instance_reported_is_recorded_by_the_dispatcher(self) -> None:
+        from app.services.cluster.run_history import offloaded_error
+
+        record = await self._dispatch(offloaded_error("boom"))
+        record.assert_awaited_once()
+        self.assertEqual(record.await_args.kwargs["message"], "boom")
+        self.assertEqual(record.await_args.kwargs["trigger_source"], "cron")
+
+    async def test_a_reported_run_is_not_recorded_twice(self) -> None:
+        from app.services.cluster.run_history import from_summary
+
+        record = await self._dispatch(from_summary({"status": "error", "outputs": {}}))
+        record.assert_not_awaited()
+
+
+class OffloadedRunLoggingTests(unittest.TestCase):
+    """The log line is the only thing an operator sees for an offloaded run."""
+
+    def _log(self, result: object) -> tuple[str, str]:
+        from app.services.cluster.dispatch import log_offloaded_run
+
+        with self.assertLogs("cluster", level="INFO") as captured:
+            log_offloaded_run(
+                logging.getLogger("cluster"), workflow_id="wf-1", trigger="cron", result=result
+            )
+        return captured.records[0].levelname, captured.records[0].getMessage()
+
+    def test_a_dispatch_failure_names_its_reason(self) -> None:
+        from app.services.cluster.run_history import offloaded_error
+
+        level, message = self._log(offloaded_error("Skipped: not claimed in time"))
+        self.assertEqual(level, "ERROR")
+        self.assertIn("Skipped: not claimed in time", message)
+
+    def test_a_successful_run_names_the_instance_that_ran_it(self) -> None:
+        from app.services.cluster.run_history import from_summary
+
+        level, message = self._log(
+            from_summary({"status": "success", "outputs": {}, "instance": "worker-1"})
+        )
+        self.assertEqual(level, "INFO")
+        self.assertIn("worker-1", message)
+
+    def test_a_workflow_that_ran_and_failed_is_a_warning(self) -> None:
+        """Not an error of dispatch: the run happened, its history holds the node."""
+        from app.services.cluster.run_history import from_summary
+
+        level, message = self._log(
+            from_summary({"status": "error", "outputs": {}, "instance": "worker-1"})
+        )
+        self.assertEqual(level, "WARNING")
+        self.assertIn("history", message)
+
+
+class RecordFailedDispatchTests(unittest.IsolatedAsyncioTestCase):
+    """The row written for a run that never executed anywhere."""
+
+    def _session(self, inserted: object) -> tuple[MagicMock, MagicMock]:
+        workflow = SimpleNamespace(id=uuid.uuid4(), owner_id=uuid.uuid4(), name="Nightly")
+        db = MagicMock()
+        db.get = AsyncMock(return_value=workflow)
+        db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: inserted))
+        db.commit = AsyncMock()
+        db.rollback = AsyncMock()
+        factory = MagicMock()
+        factory.return_value.__aenter__ = AsyncMock(return_value=db)
+        factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        return db, factory
+
+    async def _record(self, inserted: object) -> tuple[MagicMock, AsyncMock, bool]:
+        from app.services.cluster.run_history import record_failed_dispatch
+
+        db, factory = self._session(inserted)
+        snapshot = AsyncMock()
+        with (
+            patch("app.services.cluster.run_history.async_session_maker", factory),
+            patch("app.services.cluster.run_history.upsert_workflow_analytics_snapshot", snapshot),
+        ):
+            written = await record_failed_dispatch(
+                execution_id=uuid.uuid4(),
+                workflow_id=uuid.uuid4(),
+                inputs={"triggered_by": "cron"},
+                trigger_source="cron",
+                message="Skipped: not claimed inside the misfire grace window",
+            )
+        return db, snapshot, written
+
+    async def test_the_failed_run_is_written_with_its_reason(self) -> None:
+        _db, _snapshot, written = await self._record(uuid.uuid4())
+        self.assertTrue(written)
+
+    async def test_the_failed_run_counts_in_analytics(self) -> None:
+        _db, snapshot, _written = await self._record(uuid.uuid4())
+        snapshot.assert_awaited_once()
+        self.assertEqual(snapshot.await_args.kwargs["status"], "error")
+
+    async def test_a_run_that_reported_late_keeps_its_own_row(self) -> None:
+        """The insert conflicts, so the analytics bucket must not count it twice."""
+        db, snapshot, written = await self._record(None)
+        self.assertFalse(written)
+        snapshot.assert_not_awaited()
+        db.commit.assert_not_awaited()
+
+    async def test_a_deleted_workflow_is_not_recorded(self) -> None:
+        from app.services.cluster.run_history import record_failed_dispatch
+
+        _db, factory = self._session(uuid.uuid4())
+        factory.return_value.__aenter__.return_value.get = AsyncMock(return_value=None)
+        with patch("app.services.cluster.run_history.async_session_maker", factory):
+            written = await record_failed_dispatch(
+                execution_id=uuid.uuid4(),
+                workflow_id=uuid.uuid4(),
+                inputs={},
+                trigger_source="cron",
+                message="boom",
+            )
+        self.assertFalse(written)
+
+
+class RunHistoryLastWriterWinsTests(unittest.IsolatedAsyncioTestCase):
+    """The instance that ran it holds the real answer, even if the queue gave up.
+
+    A stranded claim is retired while its run may still be going. The retiring
+    pass records the failure under the same execution id, so the run's own
+    history write has to replace that row rather than collide with it.
+    """
+
+    async def test_the_run_row_replaces_a_row_already_recorded_for_it(self) -> None:
+        from sqlalchemy.dialects import postgresql
+
+        from app.services.cluster.run_history import persist_run_history
+
+        db = MagicMock()
+        db.execute = AsyncMock()
+        db.commit = AsyncMock()
+        factory = MagicMock()
+        factory.return_value.__aenter__ = AsyncMock(return_value=db)
+        factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = SimpleNamespace(
+            status="success",
+            outputs={},
+            node_results=[],
+            execution_time_ms=1.0,
+            sub_workflow_executions=[],
+        )
+        with (
+            patch("app.services.cluster.run_history.async_session_maker", factory),
+            patch(
+                "app.services.cluster.run_history.upsert_workflow_analytics_snapshot",
+                new=AsyncMock(),
+            ),
+        ):
+            await persist_run_history(
+                execution_id=uuid.uuid4(),
+                workflow_id=uuid.uuid4(),
+                owner_id=uuid.uuid4(),
+                workflow_name="Nightly",
+                inputs={},
+                trigger_source="cron",
+                result=result,
+            )
+        statement = db.execute.await_args.args[0]
+        compiled = str(statement.compile(dialect=postgresql.dialect())).upper()
+        self.assertIn("ON CONFLICT (ID) DO UPDATE", compiled)

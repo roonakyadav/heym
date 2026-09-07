@@ -25,6 +25,7 @@ from app.services.cluster.run_history import (
     offloaded_error,
     persist_pending_run_history,
     persist_run_history,
+    record_failed_dispatch,
     summarize,
 )
 from app.services.cluster.run_result_bus import DEFAULT_WAIT_SECONDS, run_result_bus
@@ -66,9 +67,39 @@ def resolve_placement(nodes: list[dict], workflow_cache: dict[str, dict] | None)
 
 
 def _timeout_error(execution_id: uuid.UUID) -> OffloadedRun:
+    # reported: the run may still be executing and still owns this history id.
     return offloaded_error(
         f"Run {execution_id} did not report a result in time. It may still be "
-        "executing on another instance; check the execution history."
+        "executing on another instance; check the execution history.",
+        reported=True,
+    )
+
+
+def log_offloaded_run(log: logging.Logger, *, workflow_id: Any, trigger: str, result: Any) -> None:
+    """Report an offloaded run's outcome with the reason it had, at its level.
+
+    A dispatch that never ran and a workflow that ran and failed both arrive
+    here as status "error". Logging them the same way, without the reason, is
+    what leaves an operator with nothing to act on.
+    """
+    error = getattr(result, "error", None)
+    if error:
+        log.error("Workflow %s could not be run via %s: %s", workflow_id, trigger, error)
+        return
+    instance = getattr(result, "instance", "") or "another instance"
+    status = getattr(result, "status", "unknown")
+    if status in {"success", "pending"}:
+        log.info(
+            "Workflow %s executed via %s on %s, status: %s", workflow_id, trigger, instance, status
+        )
+        return
+    log.warning(
+        "Workflow %s executed via %s on %s and finished with status %s; "
+        "its history row on that instance holds the failing node",
+        workflow_id,
+        trigger,
+        instance,
+        status,
     )
 
 
@@ -88,6 +119,8 @@ async def wait_for_result(
             status, result, error = await run_queue.read_terminal_result(execution_id)
             if run_queue.is_terminal(status):
                 if error or result is None:
+                    # Not reported: the queue retired this run, so no instance
+                    # wrote its history and the caller must record the failure.
                     return offloaded_error(error or "Run finished without a result")
                 return from_summary(result)
 
@@ -178,7 +211,17 @@ async def dispatch_workflow(
     if not wait_for_completion:
         run_result_bus.release(run_id)
         return None
-    return await wait_for_result(run_id, timeout_seconds=timeout_seconds)
+    result = await wait_for_result(run_id, timeout_seconds=timeout_seconds)
+    if not result.reported:
+        # Nothing executed this run, so nothing else will ever record it.
+        await record_failed_dispatch(
+            execution_id=run_id,
+            workflow_id=workflow_id,
+            inputs=inputs,
+            trigger_source=trigger_source,
+            message=result.error or "The run was retired before any instance executed it",
+        )
+    return result
 
 
 class RunQueueWorker:
