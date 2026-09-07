@@ -20,7 +20,7 @@ from app.services.alerts.cleanup import cleanup_old_alert_events
 from app.services.alerts.evaluator import evaluate_due_alerts
 from app.services.cluster import registry, run_queue
 from app.services.cluster.autoweight import apply_automatic_weighting
-from app.services.cluster.dispatch import dispatch_workflow
+from app.services.cluster.dispatch import dispatch_workflow, log_offloaded_run
 from app.services.cron_slot_state import claim_cron_slot, cleanup_cron_slot_claims
 from app.services.distributed_lock import lock_service
 from app.services.global_variables_service import get_global_variables_context
@@ -202,7 +202,9 @@ class CronScheduler:
                 workflow_id=workflow.id,
                 execution_id=execution_id,
                 inputs=enriched_inputs,
-                trigger_source="schedule",
+                # Same word the in-process path writes to history, or the same
+                # run reads as two different trigger sources in the UI.
+                trigger_source="cron",
                 actor_user_id=workflow.owner_id,
             )
             try:
@@ -214,7 +216,7 @@ class CronScheduler:
                     edges=workflow.edges,
                     inputs=enriched_inputs,
                     workflow_cache=workflow_cache,
-                    trigger_source="schedule",
+                    trigger_source="cron",
                     credentials_owner_id=workflow.owner_id,
                     execution_id=execution_id,
                     run_in_thread=True,
@@ -228,13 +230,10 @@ class CronScheduler:
             finally:
                 clear_execution(execution_id)
 
-            # An offloaded run wrote its own history on the instance that ran it.
+            # An offloaded run's history is written where it ran, or by the
+            # dispatcher itself when the queue retired it before it ran.
             if getattr(result, "history_written", False):
-                logger.info(
-                    "Workflow %s executed via cron on another instance, status: %s",
-                    workflow.id,
-                    result.status,
-                )
+                log_offloaded_run(logger, workflow_id=workflow.id, trigger="cron", result=result)
                 return
             if result.allow_downstream_pending:
                 result.join_allow_downstream()

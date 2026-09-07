@@ -212,7 +212,7 @@ class HeymEventDispatcher:
             get_credentials_context,
         )
         from app.db.models import ExecutionHistory
-        from app.services.cluster.dispatch import dispatch_workflow
+        from app.services.cluster.dispatch import dispatch_workflow, log_offloaded_run
         from app.services.execution_cancellation import clear_execution, register_execution
         from app.services.global_variables_service import get_global_variables_context
         from app.services.hitl_service import build_default_public_base_url
@@ -263,12 +263,14 @@ class HeymEventDispatcher:
             finally:
                 clear_execution(execution_id)
 
-            # An offloaded run wrote its own history on the instance that ran it.
+            # An offloaded run's history is written where it ran, or by the
+            # dispatcher itself when the queue retired it before it ran.
             if getattr(result, "history_written", False):
-                logger.info(
-                    "Workflow %s executed via Heym event trigger on another instance, status: %s",
-                    fresh_workflow.id,
-                    result.status,
+                log_offloaded_run(
+                    logger,
+                    workflow_id=fresh_workflow.id,
+                    trigger="Heym event trigger",
+                    result=result,
                 )
                 return
 

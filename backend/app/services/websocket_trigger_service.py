@@ -19,7 +19,7 @@ from app.api.workflows import (
 )
 from app.db.models import ExecutionHistory, Workflow
 from app.db.session import async_session_maker
-from app.services.cluster.dispatch import dispatch_workflow
+from app.services.cluster.dispatch import dispatch_workflow, log_offloaded_run
 from app.services.distributed_lock import lock_service
 from app.services.global_variables_service import get_global_variables_context
 from app.services.hitl_service import build_default_public_base_url
@@ -448,12 +448,11 @@ class WebSocketTriggerManager:
             finally:
                 clear_execution(execution_id)
 
-            # An offloaded run wrote its own history on the instance that ran it.
+            # An offloaded run's history is written where it ran, or by the
+            # dispatcher itself when the queue retired it before it ran.
             if getattr(result, "history_written", False):
-                logger.info(
-                    "Workflow %s executed via WebSocket trigger on another instance, status: %s",
-                    workflow.id,
-                    result.status,
+                log_offloaded_run(
+                    logger, workflow_id=workflow.id, trigger="WebSocket trigger", result=result
                 )
                 return
 
