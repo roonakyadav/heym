@@ -97,8 +97,10 @@ class _FakeWorkflowExecutor:
         workflow_name: str = "",  # noqa: ARG002
         workflow_description: str = "",  # noqa: ARG002
         execution_id: str = "",  # noqa: ARG002
+        llm_session_id: str | None = None,
     ) -> None:
         del actor_user_id, timeout_seconds, workflow_name, workflow_description, execution_id
+        self.llm_session_id = llm_session_id
         self.nodes = {node["id"]: node for node in nodes}
         self.edges = list(edges)
         self._active_edges = list(edges)
@@ -236,6 +238,21 @@ class ExecuteWorkflowStreamingSseTests(unittest.TestCase):
 
 class StreamingRunPublishesLiveEventsTests(unittest.TestCase):
     """Events yielded by the runner are buffered for canvases attaching later."""
+
+    def test_streaming_preserves_conversation_session(self) -> None:
+        with patch(
+            "app.services.workflow_executor.WorkflowExecutor", wraps=_FakeWorkflowExecutor
+        ) as constructor:
+            list(
+                execute_workflow_streaming(
+                    workflow_id=uuid.uuid4(),
+                    nodes=[{"id": "node-1", "type": "llm", "data": {"label": "LLM"}}],
+                    edges=[],
+                    inputs={},
+                    llm_session_id="portal-conversation",
+                )
+            )
+        self.assertEqual(constructor.call_args.kwargs["llm_session_id"], "portal-conversation")
 
     def test_run_buffers_its_events_on_the_shared_execution_handle(self) -> None:
         workflow_id = uuid.uuid4()

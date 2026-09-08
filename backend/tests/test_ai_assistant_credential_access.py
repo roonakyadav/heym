@@ -50,6 +50,20 @@ class AIAssistantOpenAIClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "Custom LLM URL is not allowed")
 
+    def test_opencode_assistant_uses_conversation_session_or_generates_one(self) -> None:
+        for session_id in (None, "conversation-1", "conversation-1", "conversation-2"):
+            client, _ = get_openai_client(
+                CredentialType.custom,
+                {"api_key": "test", "base_url": "https://opencode.ai/zen/go/v1"},
+                session_id=session_id,
+            )
+            with client:
+                header = client.default_headers["x-opencode-session"]
+                if session_id:
+                    self.assertEqual(header, session_id)
+                else:
+                    uuid.UUID(header)
+
 
 class AIAssistantCredentialAccessTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_credential_for_user_uses_accessible_credential_helper(self) -> None:

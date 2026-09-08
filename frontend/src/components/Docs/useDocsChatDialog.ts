@@ -33,6 +33,7 @@ export function useDocsChatDialog(props: DocsChatDialogProps, onClose: () => voi
   const loadingModels = ref(false);
   const modelsLoadFailed = ref(false);
   const messages = ref<ChatMessage[]>([]);
+  const conversationId = ref(crypto.randomUUID());
   const inputText = ref("");
   const streaming = ref(false);
   const steps = ref<string[]>([]);
@@ -149,6 +150,7 @@ export function useDocsChatDialog(props: DocsChatDialogProps, onClose: () => voi
     bumpStreamSequence();
     activeAbortController.value?.abort();
     messages.value = [];
+    conversationId.value = crypto.randomUUID();
     inputText.value = "";
     streaming.value = false;
     steps.value = [];
@@ -184,6 +186,7 @@ export function useDocsChatDialog(props: DocsChatDialogProps, onClose: () => voi
         model: selectedModel.value,
         message: text,
         conversationHistory: buildConversationHistory(),
+        conversationId: conversationId.value,
         chatSurface: "documentation",
         userRules: props.docPath ? `The user is currently reading the Heym documentation page: /docs/${props.docPath}. Prioritize answers relevant to this page.` : undefined,
         clientLocalDatetime: new Date().toLocaleString(),

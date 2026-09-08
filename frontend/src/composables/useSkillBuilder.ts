@@ -21,6 +21,7 @@ export function useSkillBuilder() {
   const hasFilesUpdate = ref(false);
   const abortController = ref<AbortController | null>(null);
   const conversationHistory = ref<SkillBuilderConversationMessage[]>([]);
+  const conversationId = ref(crypto.randomUUID());
 
   function reset(): void {
     abortController.value?.abort();
@@ -31,6 +32,7 @@ export function useSkillBuilder() {
     error.value = null;
     hasFilesUpdate.value = false;
     conversationHistory.value = [];
+    conversationId.value = crypto.randomUUID();
   }
 
   function initialize(greeting: string, previewFiles: SkillBuilderFile[] = []): void {
@@ -70,6 +72,7 @@ export function useSkillBuilder() {
         attachments,
         existingSkill,
         conversationHistory: conversationHistory.value,
+        conversationId: conversationId.value,
       },
       (chunk) => {
         assistantContent += chunk;

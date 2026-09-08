@@ -118,7 +118,7 @@ class TestBuildWorkflowInputs(unittest.IsolatedAsyncioTestCase):
                 board_mapper_service,
                 "execute_llm",
                 AsyncMock(return_value={"text": '{"text": "WRITE LAUNCH EMAIL"}'}),
-            ),
+            ) as execute_llm,
         ):
             inputs = await board_mapper_service.build_workflow_inputs(
                 db,
@@ -129,6 +129,7 @@ class TestBuildWorkflowInputs(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(inputs["text"], "WRITE LAUNCH EMAIL")
+        self.assertEqual(execute_llm.call_args.kwargs["trace_context"].session_id, "c1")
         self.assertEqual(inputs["board"]["card_title"], "Write launch email")
         self.assertEqual(inputs["board"]["board_id"], str(board.id))
         self.assertEqual(inputs["board"]["move"]["to_column"], "Planning")

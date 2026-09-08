@@ -70,6 +70,7 @@ async def humanize_output(
     workflow: Any,
     outputs: dict,
     column_ai_instructions: str | None,
+    session_id: str | None = None,
 ) -> str | None:
     """Render a workflow's raw output as plain text/markdown for the card activity.
 
@@ -98,6 +99,7 @@ async def humanize_output(
                 workflow_id=getattr(workflow, "id", None),
                 node_label="board_output",
                 source="kanban_ai_mapper",
+                session_id=session_id,
             ),
         )
         text = (result.get("text") or "").strip()
@@ -182,6 +184,7 @@ async def build_workflow_inputs(
         workflow_id=getattr(workflow, "id", None),
         node_label="board_mapper",
         source="kanban_ai_mapper",
+        session_id=str((available_context.get("card") or {}).get("id") or "") or None,
     )
 
     result = await execute_llm(

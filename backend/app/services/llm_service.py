@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -527,6 +528,7 @@ class LLMService:
         self.api_key = api_key
         self.base_url = base_url
         self.trace_context = trace_context
+        self.session_id = (trace_context.session_id if trace_context else None) or str(uuid.uuid4())
         self.request_timeout = request_timeout
 
     def _get_client(self) -> tuple[OpenAI, str]:
@@ -548,6 +550,7 @@ class LLMService:
                 api_key=self.api_key,
                 base_url=base,
                 subject="Custom LLM credential base URL",
+                session_id=self.session_id,
                 timeout=self.request_timeout,
             ), "Custom"
 
@@ -560,9 +563,10 @@ class LLMService:
             return create_guarded_openai_client(
                 base_url=self.base_url,
                 subject="LLM credential base URL",
+                session_id=self.session_id,
                 **client_kwargs,
             ), "OpenAI"
-        return create_openai_client(**client_kwargs), "OpenAI"
+        return create_openai_client(session_id=self.session_id, **client_kwargs), "OpenAI"
 
     def _record_trace(
         self,

@@ -287,6 +287,9 @@ async def portal_execute(
             ),
             cancel_event=cancel_event,
             execution_id=str(execution_id),
+            llm_session_id=str(execute_data.conversation_id)
+            if execute_data.conversation_id
+            else None,
         )
     finally:
         clear_active_execution(execution_id)
@@ -481,6 +484,9 @@ async def portal_execute_stream(
                 cancel_event=cancel_event,
                 public_base_url=public_base_url,
                 execution_id=str(execution_id),
+                llm_session_id=str(execute_data.conversation_id)
+                if execute_data.conversation_id
+                else None,
             ):
                 event_queue.put(event)
                 if event.get("type") == "execution_complete":

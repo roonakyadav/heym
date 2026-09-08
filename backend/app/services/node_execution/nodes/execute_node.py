@@ -133,6 +133,7 @@ def execute(ctx: NodeExecutionContext) -> object:
             cancel_event=_exec_node_cancel_event,
             invoked_by_agent=self._invoked_by_agent,
             execution_id=str(_sub_exec_id),
+            llm_session_id=self.llm_session_id,
             node_pool=(_BACKGROUND_NODE_EXECUTOR if execute_do_not_wait else self._node_pool),
         )
         enriched_execute_inputs = {

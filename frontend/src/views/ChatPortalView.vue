@@ -109,6 +109,7 @@ const hasAnyInput = computed(() => {
 const hasResponses = computed(() => messages.value.some(m => m.type === "assistant"));
 
 const MAX_CONVERSATION_HISTORY = 10;
+const conversationId = crypto.randomUUID();
 
 const conversationHistory = computed(() => {
   const history: Array<{ role: string; content: string }> = [];
@@ -451,6 +452,7 @@ async function executeStream(
     body: JSON.stringify({
       inputs: inputsToSend,
       conversation_history: conversationHistory.value,
+      conversation_id: conversationId,
     }),
     signal,
   });

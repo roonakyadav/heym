@@ -70,6 +70,7 @@ class SkillBuilderRequest(BaseModel):
     existing_skill: SkillBuilderSkill | None = None
     attachments: list[SkillBuilderAttachment] = Field(default_factory=list)
     conversation_history: list[SkillBuilderConversationMessage] = Field(default_factory=list)
+    conversation_id: uuid.UUID | None = None
 
 
 SET_SKILL_FILES_TOOL: dict[str, Any] = {
@@ -848,9 +849,15 @@ async def skill_builder_stream(
         )
 
     config = decrypt_config(credential.encrypted_config)
-    client, provider = get_openai_client(credential.type, config)
+    session_id = str(request.conversation_id or uuid.uuid4())
+    client, provider = get_openai_client(
+        credential.type,
+        config,
+        session_id=session_id,
+    )
 
     trace_context = LLMTraceContext(
+        session_id=session_id,
         user_id=current_user.id,
         credential_id=credential.id,
         workflow_id=None,

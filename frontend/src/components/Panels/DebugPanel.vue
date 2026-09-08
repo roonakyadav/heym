@@ -1528,6 +1528,7 @@ const aiModelOptions = computed<SelectOption[]>(() =>
 );
 
 const aiMessages = ref<ChatMessage[]>([]);
+const aiConversationId = ref(crypto.randomUUID());
 const aiInputMessage = ref("");
 const aiMessagesContainer = ref<HTMLDivElement | null>(null);
 const aiTextareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -1924,6 +1925,7 @@ async function sendAiMessage(overrideText?: string): Promise<void> {
       message: message,
       currentWorkflow: currentWorkflowContext.value,
       conversationHistory: historyForRequest,
+      conversationId: aiConversationId.value,
       availableWorkflows: availableWorkflows.value.map((wf) => ({
         id: wf.id,
         name: wf.name,
@@ -2038,6 +2040,7 @@ function retryMessage(failedMessageId: string): void {
       message: userMessage,
       currentWorkflow: currentWorkflowContext.value,
       conversationHistory: historyForRequest,
+      conversationId: aiConversationId.value,
       availableWorkflows: availableWorkflows.value.map((wf) => ({
         id: wf.id,
         name: wf.name,
@@ -2670,6 +2673,7 @@ function applyWorkflowChanges(showMessage = true): void {
 
 function clearAiChat(): void {
   aiMessages.value = [];
+  aiConversationId.value = crypto.randomUUID();
 }
 
 function handleAiKeydown(event: KeyboardEvent): void {
