@@ -112,9 +112,12 @@ class TestHitlTimelineOnResume(unittest.TestCase):
 
     def test_continue_agent_keeps_pre_review_and_wait_before_rerun(self) -> None:
         snapshot = self._agent_snapshot(resume_mode="continue_agent")
+        snapshot["llm_session_id"] = "original-conversation"
+        observed_sessions: list[str] = []
         resume_started = time.time() * 1000
 
         def fake_execute_node_parallel(self, node_id: str, _inputs: dict) -> NodeResult:
+            observed_sessions.append(self.llm_session_id)
             finished = time.time() * 1000
             return self._stamp_node_result(
                 NodeResult(
@@ -146,6 +149,7 @@ class TestHitlTimelineOnResume(unittest.TestCase):
 
         agent_results = [row for row in result.node_results if row["node_id"] == "agent-1"]
         phases = [(row.get("metadata") or {}) for row in agent_results]
+        self.assertEqual(observed_sessions, ["original-conversation"])
         self.assertTrue(any(meta.get("hitl_phase") == "pre_review" for meta in phases))
         self.assertTrue(any(meta.get("hitl_wait") is True for meta in phases))
         self.assertTrue(

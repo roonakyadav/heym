@@ -117,6 +117,20 @@ _INITIAL_INPUTS = {"headers": {}, "query": {}, "body": {"text": "hello"}}
 class ExecuteNodeDoNotWaitTests(unittest.TestCase):
     """Covers both synchronous (regression) and fire-and-forget modes."""
 
+    def test_subworkflow_inherits_parent_conversation_session(self) -> None:
+        executor = WorkflowExecutor(
+            nodes=_make_parent_nodes(do_not_wait=False),
+            edges=_PARENT_EDGES,
+            workflow_cache=dict(_WORKFLOW_CACHE),
+            llm_session_id="card-conversation",
+        )
+        with unittest.mock.patch(
+            "app.services.workflow_executor.WorkflowExecutor", wraps=WorkflowExecutor
+        ) as constructor:
+            result = executor.execute(workflow_id=uuid.uuid4(), initial_inputs=_INITIAL_INPUTS)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(constructor.call_args.kwargs["llm_session_id"], "card-conversation")
+
     def test_wait_mode_returns_sub_result(self) -> None:
         """executeDoNotWait absent: returns sub-workflow result synchronously."""
         executor = WorkflowExecutor(

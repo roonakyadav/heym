@@ -121,6 +121,7 @@ class AIAssistantRequest(BaseModel):
     message: str
     current_workflow: dict | None = None
     conversation_history: list[dict] | None = None
+    conversation_id: uuid.UUID | None = None
     available_workflows: list[dict] | None = None
     ask_mode: bool = False
     execution_log: dict | None = None
@@ -144,6 +145,7 @@ class DashboardChatRequest(BaseModel):
     model: str
     message: str
     conversation_history: list[dict] | None = None
+    conversation_id: uuid.UUID | None = None
     chat_surface: Literal["dashboard", "documentation"] | None = None
     user_rules: str | None = None
     client_local_datetime: str | None = None
@@ -1281,6 +1283,8 @@ async def get_card_detail_for_chat(db: AsyncSession, user_id: uuid.UUID, card_id
 def get_openai_client(
     credential_type: CredentialType,
     config: dict,
+    *,
+    session_id: str | None = None,
 ) -> tuple[OpenAI, str]:
     """Build an OpenAI client and provider label for the given credential type."""
     if credential_type == CredentialType.google:
@@ -1297,11 +1301,12 @@ def get_openai_client(
                 api_key=config.get("api_key"),
                 base_url=base_url,
                 subject="AI assistant credential base URL",
+                session_id=session_id,
             ), "Custom"
         except SsrfBlockedError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    return create_openai_client(api_key=config.get("api_key")), "OpenAI"
+    return create_openai_client(api_key=config.get("api_key"), session_id=session_id), "OpenAI"
 
 
 async def get_workflows_for_user_with_inputs(
@@ -1982,6 +1987,7 @@ async def run_execute_workflow_tool(
     inputs: dict[str, Any],
     public_base_url: str,
     cancel_event: Event | None = None,
+    llm_session_id: str | None = None,
 ) -> str:
     """Execute a workflow and return JSON string result for tool. Raises no exception; errors are returned in the result."""
     if cancel_event is not None and cancel_event.is_set():
@@ -2021,6 +2027,7 @@ async def run_execute_workflow_tool(
             trace_user_id=user_id,
             actor_user_id=user_id,
             cancel_event=cancel_event,
+            llm_session_id=llm_session_id,
         )
         history_entry_id: str | None = None
         if execution_result.status == "pending":
@@ -3264,6 +3271,7 @@ async def stream_dashboard_chat(
                         inputs,
                         public_base_url,
                         cancel_event,
+                        llm_session_id=trace_context.session_id if trace_context else None,
                     )
                     tool_request = {
                         "workflow_id": workflow_id_str,
@@ -4626,7 +4634,8 @@ async def workflow_assistant_stream(
         )
 
     config = decrypt_config(credential.encrypted_config)
-    client, provider = get_openai_client(credential.type, config)
+    session_id = str(request.conversation_id or uuid.uuid4())
+    client, provider = get_openai_client(credential.type, config, session_id=session_id)
 
     node_templates = await template_service.list_node_templates(db, current_user, None)
     node_template_payload = [
@@ -4691,6 +4700,7 @@ async def workflow_assistant_stream(
             workflow_id = uuid.UUID(wf_id) if isinstance(wf_id, str) else wf_id
 
     trace_context = LLMTraceContext(
+        session_id=session_id,
         user_id=current_user.id,
         credential_id=credential.id,
         workflow_id=workflow_id,
@@ -4742,7 +4752,8 @@ async def dashboard_chat_stream(
         )
 
     config = decrypt_config(credential.encrypted_config)
-    client, provider = get_openai_client(credential.type, config)
+    session_id = str(request.conversation_id or uuid.uuid4())
+    client, provider = get_openai_client(credential.type, config, session_id=session_id)
 
     history = request.conversation_history or []
     if len(history) > MAX_DASHBOARD_CHAT_HISTORY:
@@ -4751,6 +4762,7 @@ async def dashboard_chat_stream(
     messages.append(_build_user_message(request.message, request.attachment))
 
     trace_context = LLMTraceContext(
+        session_id=session_id,
         user_id=current_user.id,
         credential_id=credential.id,
         workflow_id=None,

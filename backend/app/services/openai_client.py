@@ -1,7 +1,9 @@
 """OpenAI SDK client construction with Heym's outbound HTTP identity."""
 
+import uuid
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from openai import DEFAULT_CONNECTION_LIMITS, DEFAULT_TIMEOUT, OpenAI
 
@@ -12,10 +14,20 @@ from app.services.ssrf_guard import build_guarded_http_client, guard_http_url
 def create_openai_client(
     *,
     default_headers: Mapping[str, str] | None = None,
+    session_id: str | None = None,
     **kwargs: Any,
 ) -> OpenAI:
-    """Create an OpenAI client that sends Heym's identity on every request."""
-    headers = dict(default_headers) if default_headers is not None else None
+    """Send Heym's identity and an OpenCode session ID scoped to this conversation."""
+    headers = dict(default_headers or {})
+    base_url = urlsplit(str(kwargs.get("base_url") or ""))
+    if (base_url.hostname or "").rstrip(".") == "opencode.ai":
+        existing_session = None
+        for name in list(headers):
+            if name.lower() == "x-opencode-session":
+                existing_session = headers.pop(name)
+        headers["x-opencode-session"] = (
+            (session_id or "").strip() or (existing_session or "").strip() or str(uuid.uuid4())
+        )
     return OpenAI(default_headers=merge_outbound_headers(headers), **kwargs)
 
 
@@ -24,6 +36,7 @@ def create_guarded_openai_client(
     base_url: str,
     subject: str,
     default_headers: Mapping[str, str] | None = None,
+    session_id: str | None = None,
     **kwargs: Any,
 ) -> OpenAI:
     """Create an OpenAI-compatible client for a credential-controlled endpoint."""
@@ -40,6 +53,7 @@ def create_guarded_openai_client(
         return create_openai_client(
             base_url=base_url,
             default_headers=default_headers,
+            session_id=session_id,
             http_client=http_client,
             **kwargs,
         )

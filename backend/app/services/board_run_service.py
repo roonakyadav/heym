@@ -221,6 +221,7 @@ async def _record_output_activity(
             workflow=workflow,
             outputs=outputs,
             column_ai_instructions=column_instructions,
+            session_id=str(card_id),
         )
         if humanized:
             activity_text = humanized
@@ -366,6 +367,7 @@ async def _run_chain(
                         public_base_url=public_base_url,
                         cancel_event=cancel_event,
                         execution_id=str(execution_id),
+                        llm_session_id=str(card_id),
                     )
                 except Exception as exc:  # noqa: BLE001 - one bad link fails the chain, not the app
                     run.status = "failed"

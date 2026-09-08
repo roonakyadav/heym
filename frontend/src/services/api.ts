@@ -2004,6 +2004,7 @@ export interface AnalyzeWorkflowRequest {
 
 export interface AIAssistantRequest {
   credentialId: string;
+  conversationId?: string;
   model: string;
   message: string;
   currentWorkflow?: {
@@ -2057,6 +2058,7 @@ export interface FileAttachmentPayload {
 
 export interface DashboardChatRequest {
   credentialId: string;
+  conversationId?: string;
   model: string;
   message: string;
   conversationHistory?: Array<{ role: string; content: string }>;
@@ -2628,6 +2630,7 @@ export const aiApi = {
         message: request.message,
         current_workflow: request.currentWorkflow,
         conversation_history: request.conversationHistory,
+        conversation_id: request.conversationId,
         available_workflows: request.availableWorkflows,
         ask_mode: request.askMode ?? false,
         execution_log: request.executionLog ?? null,
@@ -2700,6 +2703,7 @@ export const aiApi = {
         model: request.model,
         message: request.message,
         conversation_history: request.conversationHistory,
+        conversation_id: request.conversationId,
         ...(request.chatSurface ? { chat_surface: request.chatSurface } : {}),
         ...(request.userRules?.trim()
           ? { user_rules: request.userRules.trim() }

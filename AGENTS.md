@@ -91,6 +91,14 @@ A capability secret is any value that grants access on its own: API keys, sessio
 - **Redact at every persistence boundary, not just the obvious one.** A request-derived secret usually reaches more than one structure: run inputs, node outputs, `node_results`, and sub-workflow history are separate columns. Redacting one moves the secret rather than removing it. Use one recursive redactor per run and apply it at each write.
 - **When touching any of the above:** add focused tests under `backend/tests/test_advisory_*.py`, including the negative case that the stored representation does not authenticate.
 
+### OpenCode session headers (required for future LLM integrations)
+Every model request to OpenCode must include a nonempty `x-opencode-session` header for prompt caching.
+
+- Use the shared client factories in `backend/app/services/openai_client.py`. Detect OpenCode from the credential's explicit `base_url` hostname (`opencode.ai`); do not rely on an `OPENAI_BASE_URL` environment variable.
+- Pass the conversation ID as `session_id`, including through `LLMTraceContext.session_id` and `WorkflowExecutor.llm_session_id` where applicable. Keep it stable across follow-ups, retries, tool calls, sub-workflows, and pause/resume. Start a new ID for each new conversation.
+- Chat and assistant surfaces must preserve their conversation ID across requests. Kanban uses the card ID across reruns and column moves. Standalone workflow runs can use the execution ID. If no ID is available, generate a UUID and retain it for that conversation; never send an empty header.
+- When adding a new LLM call path or changing a coding-agent SDK/CLI integration, verify that the outgoing OpenCode model requests carry this header with the correct session scope. Add regression coverage for stable follow-ups, distinct new conversations, and the nonempty fallback. Preserve the shared client's Heym User-Agent and SSRF protection.
+
 ### Node and operation integration
 When adding a new node type, operation, or operation-specific field, keep the canvas affordances in sync with the schema:
 

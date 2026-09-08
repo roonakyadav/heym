@@ -1290,6 +1290,7 @@ class ChatMessage(BaseModel):
 class PortalExecuteRequest(BaseModel):
     inputs: dict = Field(default_factory=dict)
     conversation_history: list[ChatMessage] = Field(default_factory=list)
+    conversation_id: uuid.UUID | None = None
 
 
 class HITLPublicResponse(BaseModel):

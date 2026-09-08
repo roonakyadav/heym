@@ -1949,6 +1949,7 @@ class WorkflowExecutor:
         workflow_description: str = "",
         execution_id: str = "",
         node_pool: ThreadPoolExecutor | None = None,
+        llm_session_id: str | None = None,
     ) -> None:
         self.nodes = {node["id"]: node for node in nodes}
         self._node_pool = node_pool or _SHARED_EXECUTOR
@@ -1973,6 +1974,7 @@ class WorkflowExecutor:
         self.workflow_name = workflow_name
         self.workflow_description = workflow_description
         self.execution_id = execution_id
+        self.llm_session_id = llm_session_id or execution_id or str(uuid.uuid4())
         self.trace_user_id = trace_user_id
         self.actor_user_id = actor_user_id
         self.conversation_history = conversation_history
@@ -2384,6 +2386,7 @@ class WorkflowExecutor:
             node_id=node_id,
             node_label=node_label,
             source="workflow",
+            session_id=self.llm_session_id,
         )
 
     @staticmethod
@@ -2950,6 +2953,7 @@ class WorkflowExecutor:
             "workflow_cache": copy.deepcopy(self.workflow_cache),
             "initial_inputs": copy.deepcopy(initial_inputs),
             "conversation_history": copy.deepcopy(self.conversation_history),
+            "llm_session_id": self.llm_session_id,
             "node_results": _serialize_node_results(
                 _order_node_results(
                     list(node_results)
@@ -2985,6 +2989,7 @@ class WorkflowExecutor:
             "edges": copy.deepcopy(self.edges),
             "workflow_cache": copy.deepcopy(self.workflow_cache),
             "conversation_history": copy.deepcopy(self.conversation_history),
+            "llm_session_id": self.llm_session_id,
             "node_outputs": copy.deepcopy(self.node_outputs),
             "node_execution_contexts": copy.deepcopy(self.node_execution_contexts),
             "label_to_output": copy.deepcopy(self.label_to_output),
@@ -3965,6 +3970,7 @@ class WorkflowExecutor:
             cancel_event=sub_cancel_event,
             invoked_by_agent=True,
             execution_id=str(_sub_execution_id),
+            llm_session_id=self.llm_session_id,
             node_pool=self._node_pool,
         )
         enriched_inputs = {
@@ -7906,6 +7912,7 @@ def execute_workflow(
     workflow_name: str = "",
     workflow_description: str = "",
     execution_id: str = "",
+    llm_session_id: str | None = None,
 ) -> ExecutionResult:
     executor = WorkflowExecutor(
         nodes,
@@ -7925,6 +7932,7 @@ def execute_workflow(
         workflow_name=workflow_name,
         workflow_description=workflow_description,
         execution_id=execution_id,
+        llm_session_id=llm_session_id,
     )
     try:
         result = executor.execute(workflow_id, inputs)
@@ -8049,6 +8057,7 @@ def resume_workflow_execution(
         trace_user_id=trace_user_id,
         actor_user_id=_snapshot_actor_user_id(snapshot, actor_user_id),
         conversation_history=snapshot.get("conversation_history"),
+        llm_session_id=snapshot.get("llm_session_id"),
         sub_workflow_invocation_depth=int(snapshot.get("sub_workflow_invocation_depth", 0)),
         invoked_by_agent=bool(snapshot.get("invoked_by_agent", False)),
     )
@@ -8518,6 +8527,7 @@ def execute_llm_batch_notification_branch(
         trace_user_id=trace_user_id,
         actor_user_id=_snapshot_actor_user_id(snapshot),
         conversation_history=snapshot.get("conversation_history"),
+        llm_session_id=snapshot.get("llm_session_id"),
         agent_progress_queue=agent_progress_queue,
         sub_workflow_invocation_depth=int(snapshot.get("sub_workflow_invocation_depth", 0)),
         invoked_by_agent=bool(snapshot.get("invoked_by_agent", False)),
@@ -8759,6 +8769,7 @@ def execute_hitl_notification_branch(
         trace_user_id=trace_user_id,
         actor_user_id=_snapshot_actor_user_id(snapshot),
         conversation_history=snapshot.get("conversation_history"),
+        llm_session_id=snapshot.get("llm_session_id"),
         sub_workflow_invocation_depth=int(snapshot.get("sub_workflow_invocation_depth", 0)),
         invoked_by_agent=bool(snapshot.get("invoked_by_agent", False)),
     )
@@ -9137,6 +9148,7 @@ def _execute_workflow_streaming_impl(
     workflow_name: str = "",
     workflow_description: str = "",
     execution_id: str = "",
+    llm_session_id: str | None = None,
 ):
     import queue
 
@@ -9159,6 +9171,7 @@ def _execute_workflow_streaming_impl(
         workflow_name=workflow_name,
         workflow_description=workflow_description,
         execution_id=execution_id,
+        llm_session_id=llm_session_id,
     )
     wf_executor._ensure_execution_id()
     wf_executor._arm_deadline()

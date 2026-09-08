@@ -21,6 +21,8 @@ class LLMTraceContext:
     node_id: str | None = None
     node_label: str | None = None
     source: str = "workflow"
+    # Provider request correlation only; this is not a credential or a persisted trace ID.
+    session_id: str | None = None
     trace_ids: list[uuid.UUID] = field(default_factory=list, compare=False, repr=False)
 
 

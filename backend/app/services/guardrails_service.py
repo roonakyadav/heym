@@ -250,9 +250,12 @@ def _check_llm_classification(
                 api_key=api_key,
                 base_url=base_url,
                 subject="Guardrail credential base URL",
+                session_id=trace_context.session_id if trace_context else None,
             )
         else:
-            client = create_openai_client(api_key=api_key)
+            client = create_openai_client(
+                api_key=api_key, session_id=trace_context.session_id if trace_context else None
+            )
         response = client.chat.completions.create(
             model=model,
             messages=[

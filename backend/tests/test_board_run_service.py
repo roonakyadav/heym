@@ -205,6 +205,37 @@ def _runner_patches(context, execute_side_effect):
 
 
 class TestRunCardChain(unittest.IsolatedAsyncioTestCase):
+    async def test_followups_share_card_session_across_runs_and_workflows(self) -> None:
+        for _ in range(2):
+            card, board, _session, factory, links, context = _chain_env()
+            calls: list[dict] = []
+
+            def fake_execute(**kwargs: object) -> SimpleNamespace:
+                calls.append(kwargs)
+                return _success_result({"text": "done"})
+
+            patches = _runner_patches(context, fake_execute)
+            for p in patches:
+                p.start()
+            try:
+                with patch.object(board_run_service, "_auto_advance", AsyncMock()):
+                    for rerun in (False, True):
+                        await board_run_service._run_chain(
+                            card_id=card.id,
+                            board_id=board.id,
+                            column_id=card.column_id,
+                            links=links,
+                            move=None,
+                            rerun=rerun,
+                            session_factory=factory,
+                        )
+                self.assertEqual(len(calls), 4)
+                self.assertEqual({c["llm_session_id"] for c in calls}, {str(card.id)})
+                self.assertEqual(len({c["execution_id"] for c in calls}), 4)
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+
     async def test_sequential_success_marks_card_green(self):
         card, board, session, factory, links, context = _chain_env()
         calls = []

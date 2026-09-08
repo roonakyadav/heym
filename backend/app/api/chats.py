@@ -315,7 +315,7 @@ async def _run_chat_turn(
                 return ChatTurnResult(False, assistant_message_id, stop_worker=True)
 
             config = decrypt_config(credential.encrypted_config)
-            client, provider = get_openai_client(credential.type, config)
+            client, provider = get_openai_client(credential.type, config, session_id=conv_id)
 
             attachment = (
                 FileAttachment(
@@ -343,6 +343,7 @@ async def _run_chat_turn(
                 workflow_id=None,
                 node_label="Dashboard Chat",
                 source="dashboard_chat",
+                session_id=conv_id,
             )
             parts = await _assemble_system_prompt_parts(
                 user, db, include_attachment_instructions=turn.attachment_data is not None

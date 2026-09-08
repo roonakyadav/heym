@@ -61,6 +61,7 @@ class _FakeRetryStreamingExecutor:
         workflow_name: str = "",
         workflow_description: str = "",
         execution_id: str = "",
+        llm_session_id: str | None = None,
     ) -> None:
         del (
             workflow_cache,
@@ -77,6 +78,7 @@ class _FakeRetryStreamingExecutor:
             workflow_name,
             workflow_description,
             execution_id,
+            llm_session_id,
         )
         self.nodes = {node["id"]: node for node in nodes}
         self.edges = list(edges)

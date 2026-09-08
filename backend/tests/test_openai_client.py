@@ -1,11 +1,13 @@
 """Tests for the shared OpenAI SDK client factory."""
 
 import unittest
+import uuid
+from unittest.mock import patch
 
 import httpx
 
 from app.http_identity import HEYM_USER_AGENT
-from app.services.openai_client import create_openai_client
+from app.services.openai_client import create_guarded_openai_client, create_openai_client
 
 
 class OpenAIClientIdentityTests(unittest.TestCase):
@@ -49,6 +51,117 @@ class OpenAIClientIdentityTests(unittest.TestCase):
             self.assertEqual(client.default_headers["X-Custom"], "custom-value")
         finally:
             client.close()
+
+
+class OpenCodeSessionTests(unittest.TestCase):
+    def test_session_survives_retries_and_streaming_on_the_wire(self) -> None:
+        captured: list[httpx.Headers] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            captured.append(request.headers)
+            if len(captured) == 1:
+                return httpx.Response(500, json={}, headers={"retry-after-ms": "1"})
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text='data: {"id":"test","object":"chat.completion.chunk",'
+                '"created":0,"model":"test","choices":[{"index":0,'
+                '"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+                "data: [DONE]\n\n",
+            )
+
+        with create_openai_client(
+            api_key="test-key",
+            base_url="https://opencode.ai/zen/go/v1",
+            session_id="conversation-1",
+            default_headers={"X-Custom": "kept"},
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+        ) as client:
+            for _ in range(2):
+                chunks = list(
+                    client.chat.completions.create(
+                        model="test", messages=[{"role": "user", "content": "hi"}], stream=True
+                    )
+                )
+                self.assertEqual(chunks[0].choices[0].delta.content, "hello")
+
+        self.assertEqual(len(captured), 3)
+        for headers in captured:
+            self.assertEqual(headers["x-opencode-session"], "conversation-1")
+            self.assertEqual(headers["User-Agent"], HEYM_USER_AGENT)
+            self.assertEqual(headers["Authorization"], "Bearer test-key")
+            self.assertEqual(headers["X-Custom"], "kept")
+
+    def test_missing_or_blank_session_gets_a_distinct_nonempty_id(self) -> None:
+        sessions = []
+        for session_id in (None, "", "   "):
+            with create_openai_client(
+                api_key="test", base_url="https://opencode.ai/zen/go/v1", session_id=session_id
+            ) as client:
+                value = client.default_headers["x-opencode-session"]
+                self.assertEqual(str(uuid.UUID(value)), value)
+                sessions.append(value)
+        self.assertEqual(len(set(sessions)), 3)
+
+    def test_followups_reuse_explicit_id_across_clients(self) -> None:
+        for _ in range(2):
+            with create_openai_client(
+                api_key="test", base_url="https://opencode.ai/zen/v1", session_id="conversation"
+            ) as client:
+                self.assertEqual(client.default_headers["x-opencode-session"], "conversation")
+
+    def test_only_exact_opencode_host_receives_automatic_header(self) -> None:
+        for base_url, expected in (
+            ("https://opencode.ai/zen/go/v1", True),
+            ("https://OPENCODE.AI.:443/zen/v1", True),
+            ("https://opencode.ai/v1", True),
+            ("https://api.openai.com/v1", False),
+            ("https://opencode.ai.example.test/v1", False),
+            ("https://opencode.ai@other.example.test/v1", False),
+        ):
+            with self.subTest(base_url=base_url):
+                with create_openai_client(
+                    api_key="test", base_url=base_url, session_id="conversation"
+                ) as client:
+                    self.assertEqual("x-opencode-session" in client.default_headers, expected)
+
+    def test_omitted_base_url_does_not_add_opencode_header(self) -> None:
+        with create_openai_client(api_key="test", session_id="conversation") as client:
+            self.assertNotIn("x-opencode-session", client.default_headers)
+
+    def test_existing_header_is_normalized_without_mutating_caller(self) -> None:
+        headers = {"X-OpenCode-Session": "existing", "X-Custom": "kept"}
+        for session_id, expected in ((None, "existing"), ("explicit", "explicit")):
+            with create_openai_client(
+                api_key="test",
+                base_url="https://opencode.ai/zen/go/v1",
+                session_id=session_id,
+                default_headers=headers,
+            ) as client:
+                self.assertEqual(client.default_headers["x-opencode-session"], expected)
+                self.assertNotIn("X-OpenCode-Session", client.default_headers)
+        self.assertEqual(headers, {"X-OpenCode-Session": "existing", "X-Custom": "kept"})
+
+    def test_guarded_client_preserves_session_and_url_guard(self) -> None:
+        with (
+            patch("app.services.openai_client.guard_http_url") as guard,
+            patch("app.services.openai_client.build_guarded_http_client") as transport,
+        ):
+            transport.return_value = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={"data": [], "object": "list"})
+                )
+            )
+            with create_guarded_openai_client(
+                api_key="test",
+                base_url="https://opencode.ai/zen/go/v1",
+                subject="Test credential",
+                session_id="conversation",
+            ) as client:
+                self.assertEqual(client.default_headers["x-opencode-session"], "conversation")
+                client.models.list()
+            guard.assert_called_once_with("https://opencode.ai/zen/go/v1", "Test credential")
+            transport.assert_called_once()
 
 
 if __name__ == "__main__":

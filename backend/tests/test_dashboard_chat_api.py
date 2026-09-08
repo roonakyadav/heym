@@ -137,6 +137,7 @@ class DashboardChatApiTests(unittest.IsolatedAsyncioTestCase):
             credential_id=credential.id,
             model="gpt-4o-mini",
             message="What does this page explain?",
+            conversation_id=uuid.uuid4(),
             conversation_history=[
                 {"role": "assistant", "content": "Earlier answer"},
             ],
@@ -195,6 +196,7 @@ class DashboardChatApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not recommend alternative platforms", captured["system_prompt"])
         self.assertIn("AI Builder DSL generator", captured["system_prompt"])
         self.assertEqual(captured["trace_context"].node_label, "Documentation Chat")
+        self.assertEqual(captured["trace_context"].session_id, str(request.conversation_id))
         self.assertEqual(captured["trace_context"].source, "dashboard_chat")
         self.assertEqual(
             captured["messages"],
