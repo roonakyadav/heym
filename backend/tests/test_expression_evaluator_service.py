@@ -975,6 +975,8 @@ class TestExpressionEvaluatorServiceEvaluate(unittest.TestCase):
             ("Hello world", "Hello world!"),
             ('He said "hello"', 'He said "hello"!'),
             ("Line 1\nLine 2", "Line 1\nLine 2!"),
+            ("C:\\next", "C:\\next!"),
+            ('" + upper("pwn") + "', '" + upper("pwn") + "!'),
         ]
 
         for input_text, expected in cases:
