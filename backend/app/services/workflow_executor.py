@@ -6236,14 +6236,14 @@ class WorkflowExecutor:
                 if result is None:
                     return "None"
                 if isinstance(result, str):
-                    return f'"{result}"'
+                    return repr(result)
                 return str(result)
             except Exception as e:
                 result = self._fallback_after_eval_error(e, expr, combined)
                 if result is None:
                     return "None"
                 if isinstance(result, str):
-                    return f'"{result}"'
+                    return repr(result)
                 return str(result)
 
         processed = self._replace_expressions(expression, replace_dollar_ref)

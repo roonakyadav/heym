@@ -962,6 +962,34 @@ class TestExpressionEvaluatorServiceEvaluate(unittest.TestCase):
         self.assertTrue(response.preserved_type)
         self.assertIsNone(response.error)
 
+    def test_arithmetic_string_concatenation_with_quotes_and_newlines(self) -> None:
+        """resolve_arithmetic_expression must safely handle runtime strings with quotes and newlines."""
+        expr = '$userInput.body.text + "!"'
+        ex = WorkflowExecutor(nodes=[], edges=[])
+        self.assertTrue(
+            ex._has_arithmetic(expr),
+            "precondition: set node must choose resolve_arithmetic_expression for this template",
+        )
+
+        cases = [
+            ("Hello world", "Hello world!"),
+            ('He said "hello"', 'He said "hello"!'),
+            ("Line 1\nLine 2", "Line 1\nLine 2!"),
+            ("C:\\next", "C:\\next!"),
+            ('" + upper("pwn") + "', '" + upper("pwn") + "!'),
+        ]
+
+        for input_text, expected in cases:
+            with self.subTest(input_text=input_text):
+                ctx = {"userInput": {"body": {"text": input_text}}}
+                arith_result = ex.resolve_arithmetic_expression(expr, ctx, None, preserve_type=True)
+                self.assertEqual(arith_result, expected)
+
+                response = self._service().evaluate(expr, ctx)
+                self.assertEqual(response.result, expected)
+                self.assertEqual(response.result_type, "string")
+                self.assertIsNone(response.error)
+
     def test_nested_map_filter_resolves_outer_item_in_executor_and_preview(self) -> None:
         expr = (
             '$distinctTypes.types.map("dict(issue_type=item, '
