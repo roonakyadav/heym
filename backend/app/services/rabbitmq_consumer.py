@@ -376,6 +376,10 @@ class RabbitMQConsumerManager:
                     log_offloaded_run(
                         logger, workflow_id=workflow.id, trigger="RabbitMQ trigger", result=result
                     )
+                    if getattr(result, "status", None) in {"success", "pending"}:
+                        await message.ack()
+                    else:
+                        await message.nack(requeue=False)
                     return
 
                 if needs_local_pending_persist(result):
