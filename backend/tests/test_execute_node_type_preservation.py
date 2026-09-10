@@ -197,8 +197,11 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
                     "inputFields": [
                         {"key": "sum"},
                         {"key": "cmp"},
+                        {"key": "num"},
                         {"key": "strNum"},
                         {"key": "greeting"},
+                        {"key": "spacedTitle"},
+                        {"key": "spacedCount"},
                     ],
                 },
             },
@@ -210,8 +213,11 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
                     "outputSchema": [
                         {"key": "sum", "value": "$subInput.sum"},
                         {"key": "cmp", "value": "$subInput.cmp"},
+                        {"key": "num", "value": "$subInput.num"},
                         {"key": "strNum", "value": "$subInput.strNum"},
                         {"key": "greeting", "value": "$subInput.greeting"},
+                        {"key": "spacedTitle", "value": "$subInput.spacedTitle"},
+                        {"key": "spacedCount", "value": "$subInput.spacedCount"},
                     ],
                 },
             },
@@ -224,20 +230,29 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
                 "executeInputMappings": [
                     {"key": "sum", "value": "$parentInput.count + $parentInput.other"},
                     {"key": "cmp", "value": "$parentInput.count > $parentInput.other"},
+                    {"key": "num", "value": "$42"},
                     {"key": "strNum", "value": "$'42'"},
                     {"key": "greeting", "value": "hello world"},
+                    {"key": "spacedTitle", "value": " $parentInput.title "},
+                    {"key": "spacedCount", "value": " $parentInput.count "},
                 ]
             },
-            initial_body={"count": 42, "other": 8},
+            initial_body={"count": 42, "other": 8, "title": "Report"},
         )
         self.assertIs(type(res["sum"]), int)
         self.assertEqual(res["sum"], 50)
         self.assertIs(type(res["cmp"]), bool)
         self.assertTrue(res["cmp"])
+        self.assertIs(type(res["num"]), int)
+        self.assertEqual(res["num"], 42)
         self.assertIs(type(res["strNum"]), str)
         self.assertEqual(res["strNum"], "42")
         self.assertIs(type(res["greeting"]), str)
         self.assertEqual(res["greeting"], "hello world")
+        self.assertIs(type(res["spacedTitle"]), str)
+        self.assertEqual(res["spacedTitle"], " Report ")
+        self.assertIs(type(res["spacedCount"]), str)
+        self.assertEqual(res["spacedCount"], " 42 ")
 
     def test_execute_input_template_preserves_dict(self) -> None:
         """executeInput template with a dict expression passes dict directly to child workflow."""
@@ -313,6 +328,26 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
         self.assertIs(type(res_cmp["val"]), bool)
         self.assertTrue(res_cmp["val"])
 
+        # Numeric literal expression $42 -> evaluated as int
+        res_num = _run_sub_workflow(
+            scalar_child_nodes,
+            scalar_edges,
+            execute_data={"executeInput": "$42"},
+            initial_body={},
+        )
+        self.assertIs(type(res_num["val"]), int)
+        self.assertEqual(res_num["val"], 42)
+
+        # Scalar int expression -> evaluated as int
+        res_count = _run_sub_workflow(
+            scalar_child_nodes,
+            scalar_edges,
+            execute_data={"executeInput": "$parentInput.count"},
+            initial_body={"count": 42},
+        )
+        self.assertIs(type(res_count["val"]), int)
+        self.assertEqual(res_count["val"], 42)
+
         # String literal expression -> evaluated as str
         res_str = _run_sub_workflow(
             text_child_nodes,
@@ -333,25 +368,24 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
         self.assertIs(type(res_nondollar["txt"]), str)
         self.assertEqual(res_nondollar["txt"], "hello sub-workflow")
 
-        # Scalar int expression -> evaluated as int
-        res_count = _run_sub_workflow(
-            scalar_child_nodes,
-            scalar_edges,
-            execute_data={"executeInput": "$parentInput.count"},
-            initial_body={"count": 42},
-        )
-        self.assertIs(type(res_count["val"]), int)
-        self.assertEqual(res_count["val"], 42)
-
-        # String with surrounding whitespace -> exact whitespace preserved
-        res_ws = _run_sub_workflow(
+        # Leading-whitespace template -> stays on text template path (not stripped into expression)
+        res_ws_title = _run_sub_workflow(
             text_child_nodes,
             text_edges,
-            execute_data={"executeInput": "$parentInput.title"},
-            initial_body={"title": "  spaced title  "},
+            execute_data={"executeInput": " $parentInput.title "},
+            initial_body={"title": "Report"},
         )
-        self.assertIs(type(res_ws["txt"]), str)
-        self.assertEqual(res_ws["txt"], "  spaced title  ")
+        self.assertIs(type(res_ws_title["txt"]), str)
+        self.assertEqual(res_ws_title["txt"], " Report ")
+
+        res_ws_count = _run_sub_workflow(
+            text_child_nodes,
+            text_edges,
+            execute_data={"executeInput": " $parentInput.count "},
+            initial_body={"count": 42},
+        )
+        self.assertIs(type(res_ws_count["txt"]), str)
+        self.assertEqual(res_ws_count["txt"], " 42 ")
 
     def test_whole_object_rendering_into_text(self) -> None:
         """Document expected Python-style dict string representation when a native dict is stringified.
