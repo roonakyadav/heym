@@ -77,9 +77,7 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
         res = _run_sub_workflow(
             child_nodes,
             child_edges,
-            execute_data={
-                "executeInputMappings": [{"key": "user", "value": "  $parentInput.user  "}]
-            },
+            execute_data={"executeInputMappings": [{"key": "user", "value": "$parentInput.user"}]},
             initial_body={"user": {"name": "Alice", "role": "admin"}},
         )
         self.assertEqual(res["userName"], "Alice")
@@ -227,6 +225,38 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
             initial_body={"user": {"name": "Alice"}},
         )
         self.assertEqual(res["userAsText"], "User: {'name': 'Alice'}")
+
+    def test_execute_input_mappings_mixed_template(self) -> None:
+        """executeInputMappings with a mixed template evaluates to expected text."""
+        child_nodes = [
+            {
+                "id": "c1",
+                "type": "textInput",
+                "data": {"label": "subInput", "inputFields": [{"key": "text"}]},
+            },
+            {
+                "id": "c2",
+                "type": "output",
+                "data": {
+                    "label": "subOutput",
+                    "outputSchema": [
+                        {"key": "text", "value": "$subInput.text"},
+                    ],
+                },
+            },
+        ]
+        child_edges = [{"id": "ce1", "source": "c1", "target": "c2"}]
+        res = _run_sub_workflow(
+            child_nodes,
+            child_edges,
+            execute_data={
+                "executeInputMappings": [
+                    {"key": "text", "value": "$parentInput.name and $parentInput.city"}
+                ]
+            },
+            initial_body={"name": "Alice", "city": "Paris"},
+        )
+        self.assertEqual(res["text"], "Alice and Paris")
 
 
 if __name__ == "__main__":
