@@ -74,9 +74,7 @@ def execute(ctx: NodeExecutionContext) -> object:
             key = mapping.get("key", "")
             value_template = mapping.get("value", "")
             if value_template:
-                if isinstance(value_template, str) and self._is_single_dollar_expression(
-                    value_template
-                ):
+                if isinstance(value_template, str) and value_template.startswith("$"):
                     resolved_value = self.resolve_expression(
                         value_template, inputs, node_id, preserve_type=True
                     )
@@ -86,9 +84,7 @@ def execute(ctx: NodeExecutionContext) -> object:
             else:
                 execute_inputs[key] = ""
     elif execute_input_template:
-        if isinstance(execute_input_template, str) and self._is_single_dollar_expression(
-            execute_input_template
-        ):
+        if isinstance(execute_input_template, str) and execute_input_template.startswith("$"):
             transformed_input = self.resolve_expression(
                 execute_input_template, inputs, node_id, preserve_type=True
             )

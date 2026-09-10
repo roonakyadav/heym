@@ -124,14 +124,20 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
         self.assertEqual(res["loopTotal"], 3)
 
     def test_execute_input_mappings_preserves_scalar_types(self) -> None:
-        """executeInputMappings preserves scalar types: int, bool, and string."""
+        """executeInputMappings preserves scalar types: int, bool, float, None, and string."""
         child_nodes = [
             {
                 "id": "c1",
                 "type": "textInput",
                 "data": {
                     "label": "subInput",
-                    "inputFields": [{"key": "count"}, {"key": "active"}, {"key": "title"}],
+                    "inputFields": [
+                        {"key": "count"},
+                        {"key": "active"},
+                        {"key": "score"},
+                        {"key": "empty"},
+                        {"key": "title"},
+                    ],
                 },
             },
             {
@@ -142,6 +148,8 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
                     "outputSchema": [
                         {"key": "count", "value": "$subInput.count"},
                         {"key": "active", "value": "$subInput.active"},
+                        {"key": "score", "value": "$subInput.score"},
+                        {"key": "empty", "value": "$subInput.empty"},
                         {"key": "title", "value": "$subInput.title"},
                     ],
                 },
@@ -155,17 +163,81 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
                 "executeInputMappings": [
                     {"key": "count", "value": "$parentInput.count"},
                     {"key": "active", "value": "$parentInput.active"},
+                    {"key": "score", "value": "$parentInput.score"},
+                    {"key": "empty", "value": "$parentInput.empty"},
                     {"key": "title", "value": "$parentInput.title"},
                 ]
             },
-            initial_body={"count": 42, "active": True, "title": "Report"},
+            initial_body={
+                "count": 42,
+                "active": True,
+                "score": 3.14,
+                "empty": None,
+                "title": "  spaced title  ",
+            },
         )
         self.assertIs(type(res["count"]), int)
         self.assertEqual(res["count"], 42)
         self.assertIs(type(res["active"]), bool)
         self.assertTrue(res["active"])
+        self.assertIs(type(res["score"]), float)
+        self.assertEqual(res["score"], 3.14)
+        self.assertIsNone(res["empty"])
         self.assertIs(type(res["title"]), str)
-        self.assertEqual(res["title"], "Report")
+        self.assertEqual(res["title"], "  spaced title  ")
+
+    def test_execute_input_mappings_expression_and_template_routing(self) -> None:
+        """executeInputMappings routes $ expressions to evaluator and non-$ strings to template."""
+        child_nodes = [
+            {
+                "id": "c1",
+                "type": "textInput",
+                "data": {
+                    "label": "subInput",
+                    "inputFields": [
+                        {"key": "sum"},
+                        {"key": "cmp"},
+                        {"key": "strNum"},
+                        {"key": "greeting"},
+                    ],
+                },
+            },
+            {
+                "id": "c2",
+                "type": "output",
+                "data": {
+                    "label": "subOutput",
+                    "outputSchema": [
+                        {"key": "sum", "value": "$subInput.sum"},
+                        {"key": "cmp", "value": "$subInput.cmp"},
+                        {"key": "strNum", "value": "$subInput.strNum"},
+                        {"key": "greeting", "value": "$subInput.greeting"},
+                    ],
+                },
+            },
+        ]
+        child_edges = [{"id": "ce1", "source": "c1", "target": "c2"}]
+        res = _run_sub_workflow(
+            child_nodes,
+            child_edges,
+            execute_data={
+                "executeInputMappings": [
+                    {"key": "sum", "value": "$parentInput.count + $parentInput.other"},
+                    {"key": "cmp", "value": "$parentInput.count > $parentInput.other"},
+                    {"key": "strNum", "value": "$'42'"},
+                    {"key": "greeting", "value": "hello world"},
+                ]
+            },
+            initial_body={"count": 42, "other": 8},
+        )
+        self.assertIs(type(res["sum"]), int)
+        self.assertEqual(res["sum"], 50)
+        self.assertIs(type(res["cmp"]), bool)
+        self.assertTrue(res["cmp"])
+        self.assertIs(type(res["strNum"]), str)
+        self.assertEqual(res["strNum"], "42")
+        self.assertIs(type(res["greeting"]), str)
+        self.assertEqual(res["greeting"], "hello world")
 
     def test_execute_input_template_preserves_dict(self) -> None:
         """executeInput template with a dict expression passes dict directly to child workflow."""
@@ -192,6 +264,94 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
         )
         self.assertEqual(res["userName"], "Alice")
         self.assertEqual(res["userId"], 100)
+
+    def test_execute_input_template_expression_and_template_routing(self) -> None:
+        """executeInput routes $ expressions to evaluator and non-$ strings to template."""
+        scalar_child_nodes = [
+            {"id": "c1", "type": "textInput", "data": {"label": "subInput"}},
+            {
+                "id": "c2",
+                "type": "output",
+                "data": {
+                    "label": "subOutput",
+                    "outputSchema": [{"key": "val", "value": "$subInput.value"}],
+                },
+            },
+        ]
+        scalar_edges = [{"id": "ce1", "source": "c1", "target": "c2"}]
+
+        text_child_nodes = [
+            {"id": "c1", "type": "textInput", "data": {"label": "subInput"}},
+            {
+                "id": "c2",
+                "type": "output",
+                "data": {
+                    "label": "subOutput",
+                    "outputSchema": [{"key": "txt", "value": "$subInput.text"}],
+                },
+            },
+        ]
+        text_edges = [{"id": "ce1", "source": "c1", "target": "c2"}]
+
+        # Arithmetic expression -> evaluated as int
+        res_sum = _run_sub_workflow(
+            scalar_child_nodes,
+            scalar_edges,
+            execute_data={"executeInput": "$parentInput.count + $parentInput.other"},
+            initial_body={"count": 42, "other": 8},
+        )
+        self.assertIs(type(res_sum["val"]), int)
+        self.assertEqual(res_sum["val"], 50)
+
+        # Comparison expression -> evaluated as bool
+        res_cmp = _run_sub_workflow(
+            scalar_child_nodes,
+            scalar_edges,
+            execute_data={"executeInput": "$parentInput.count > $parentInput.other"},
+            initial_body={"count": 42, "other": 8},
+        )
+        self.assertIs(type(res_cmp["val"]), bool)
+        self.assertTrue(res_cmp["val"])
+
+        # String literal expression -> evaluated as str
+        res_str = _run_sub_workflow(
+            text_child_nodes,
+            text_edges,
+            execute_data={"executeInput": "$'42'"},
+            initial_body={},
+        )
+        self.assertIs(type(res_str["txt"]), str)
+        self.assertEqual(res_str["txt"], "42")
+
+        # Non-$ string template -> evaluated as str template
+        res_nondollar = _run_sub_workflow(
+            text_child_nodes,
+            text_edges,
+            execute_data={"executeInput": "hello sub-workflow"},
+            initial_body={},
+        )
+        self.assertIs(type(res_nondollar["txt"]), str)
+        self.assertEqual(res_nondollar["txt"], "hello sub-workflow")
+
+        # Scalar int expression -> evaluated as int
+        res_count = _run_sub_workflow(
+            scalar_child_nodes,
+            scalar_edges,
+            execute_data={"executeInput": "$parentInput.count"},
+            initial_body={"count": 42},
+        )
+        self.assertIs(type(res_count["val"]), int)
+        self.assertEqual(res_count["val"], 42)
+
+        # String with surrounding whitespace -> exact whitespace preserved
+        res_ws = _run_sub_workflow(
+            text_child_nodes,
+            text_edges,
+            execute_data={"executeInput": "$parentInput.title"},
+            initial_body={"title": "  spaced title  "},
+        )
+        self.assertIs(type(res_ws["txt"]), str)
+        self.assertEqual(res_ws["txt"], "  spaced title  ")
 
     def test_whole_object_rendering_into_text(self) -> None:
         """Document expected Python-style dict string representation when a native dict is stringified.
@@ -225,38 +385,6 @@ class ExecuteNodeTypePreservationTests(unittest.TestCase):
             initial_body={"user": {"name": "Alice"}},
         )
         self.assertEqual(res["userAsText"], "User: {'name': 'Alice'}")
-
-    def test_execute_input_mappings_mixed_template(self) -> None:
-        """executeInputMappings with a mixed template evaluates to expected text."""
-        child_nodes = [
-            {
-                "id": "c1",
-                "type": "textInput",
-                "data": {"label": "subInput", "inputFields": [{"key": "text"}]},
-            },
-            {
-                "id": "c2",
-                "type": "output",
-                "data": {
-                    "label": "subOutput",
-                    "outputSchema": [
-                        {"key": "text", "value": "$subInput.text"},
-                    ],
-                },
-            },
-        ]
-        child_edges = [{"id": "ce1", "source": "c1", "target": "c2"}]
-        res = _run_sub_workflow(
-            child_nodes,
-            child_edges,
-            execute_data={
-                "executeInputMappings": [
-                    {"key": "text", "value": "$parentInput.name and $parentInput.city"}
-                ]
-            },
-            initial_body={"name": "Alice", "city": "Paris"},
-        )
-        self.assertEqual(res["text"], "Alice and Paris")
 
 
 if __name__ == "__main__":
