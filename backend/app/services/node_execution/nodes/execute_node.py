@@ -74,16 +74,22 @@ def execute(ctx: NodeExecutionContext) -> object:
             key = mapping.get("key", "")
             value_template = mapping.get("value", "")
             if value_template:
-                if value_template.startswith("$"):
-                    resolved_value = self.resolve_expression(value_template, inputs, node_id)
+                if isinstance(value_template, str) and value_template.strip().startswith("$"):
+                    resolved_value = self.resolve_expression(
+                        value_template.strip(), inputs, node_id, preserve_type=True
+                    )
                 else:
                     resolved_value = self.evaluate_message_template(value_template, inputs, node_id)
                 execute_inputs[key] = resolved_value
             else:
                 execute_inputs[key] = ""
     elif execute_input_template:
-        if execute_input_template.startswith("$"):
-            transformed_input = self.resolve_expression(execute_input_template, inputs, node_id)
+        if isinstance(execute_input_template, str) and execute_input_template.strip().startswith(
+            "$"
+        ):
+            transformed_input = self.resolve_expression(
+                execute_input_template.strip(), inputs, node_id, preserve_type=True
+            )
         else:
             transformed_input = self.evaluate_message_template(
                 execute_input_template, inputs, node_id
