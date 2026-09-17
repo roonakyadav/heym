@@ -65,6 +65,9 @@ class _FakeResult:
     def all(self) -> list[Any]:
         return list(self._rows)
 
+    def scalar(self) -> Any:
+        return self._rows[0] if self._rows else False
+
 
 class _FakeSession:
     """Async session stub that honours SAVEPOINT semantics closely enough to test."""
@@ -565,15 +568,9 @@ class ActiveExecutionsEndpointDegradationTests(unittest.IsolatedAsyncioTestCase)
 class DelayedRegistryWriteConflictTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         _flush()
-        from app.services.execution_cancellation import _RELINQUISHED_EXECUTIONS
-
-        _RELINQUISHED_EXECUTIONS.clear()
 
     def tearDown(self) -> None:
         _flush()
-        from app.services.execution_cancellation import _RELINQUISHED_EXECUTIONS
-
-        _RELINQUISHED_EXECUTIONS.clear()
 
     def test_upsert_structure_preserves_cancellation_and_progress_on_conflict(self) -> None:
         """Verify behaviorally through the upsert construction that ON CONFLICT DO UPDATE:
@@ -625,31 +622,42 @@ class DelayedRegistryWriteConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("node_results", update_set)
         self.assertIsInstance(update_set["node_results"], Case)
 
-    async def test_relinquished_execution_drops_finish_commands_on_drain(self) -> None:
-        """Proves that if an execution was relinquished, finish commands are discarded
-        during command drain and never reach the database.
+    async def test_relinquished_token_purges_commands_from_queue_and_pending(self) -> None:
+        """Proves that relinquishing a registration token purges matching commands
+        from both _commands and _pending, but keeps commands for other tokens.
         """
         from app.services.execution_cancellation import (
-            _RELINQUISHED_EXECUTIONS,
             ActiveExecutionRegistry,
             _RegistryCommand,
         )
 
-        ex_id = uuid.uuid4()
-        _RELINQUISHED_EXECUTIONS.add(ex_id)
+        token_a = uuid.uuid4()
+        token_b = uuid.uuid4()
+        ex_id_a = uuid.uuid4()
+        ex_id_b = uuid.uuid4()
+
         registry = ActiveExecutionRegistry()
+        cmd_a = _RegistryCommand(action="start", execution_id=ex_id_a, registration_token=token_a)
+        cmd_b = _RegistryCommand(action="start", execution_id=ex_id_b, registration_token=token_b)
+        registry._commands.put(cmd_a)
+        registry._commands.put(cmd_b)
 
-        # Enqueue a finish command for the relinquished execution
-        registry._commands.put(_RegistryCommand(action="finish", execution_id=ex_id))
+        # Relinquish token_a
+        registry.relinquish(token_a)
 
-        # Drain commands
-        await registry._drain_commands()
+        # cmd_a must be purged, cmd_b preserved
+        remaining_commands = list(registry._commands.queue)
+        self.assertEqual(remaining_commands, [cmd_b])
 
-        # Must not be placed into _pending
-        self.assertEqual(len(registry._pending), 0)
+        # If placed in _pending, relinquish also cleans _pending
+        registry._pending.append(cmd_a)
+        registry.relinquish(token_a)
+        self.assertNotIn(cmd_a, registry._pending)
 
-    async def test_delayed_start_command_applied_via_session(self) -> None:
-        """Applying a delayed start command passes the guarded upsert to the database session."""
+    async def test_anti_resurrection_terminal_execution_discards_start_command(self) -> None:
+        """A delayed start command for an execution that already reached a terminal state
+        must be discarded and must NOT insert an ActiveWorkflowExecution row.
+        """
         from app.services.execution_cancellation import (
             ActiveExecutionRegistry,
             _RegistryCommand,
@@ -664,6 +672,44 @@ class DelayedRegistryWriteConflictTests(unittest.IsolatedAsyncioTestCase):
             workflow_id=wf_id,
             started_at=datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc),
             inputs={"x": 1},
+        )
+
+        executed_stmts = []
+
+        def handler(kind: str, execution_id: uuid.UUID | None) -> _FakeResult:
+            executed_stmts.append((kind, execution_id))
+            return _FakeResult(rowcount=1)
+
+        # Return True for terminal check select (execution already finished)
+        session = _FakeSession(handler, select_rows=[True])
+        registry = ActiveExecutionRegistry()
+        await registry._apply_command(session, cmd, now)
+
+        # Only the select check was executed; NO insert/upsert was executed!
+        self.assertEqual(len(executed_stmts), 0)
+        insert_stmts = [kind for kind, _ in session.statements if kind == "insert"]
+        self.assertEqual(len(insert_stmts), 0)
+
+    async def test_delayed_start_command_applied_via_session(self) -> None:
+        """Applying a delayed start command passes the guarded upsert to the database session
+        using command.enqueued_at as heartbeat_at rather than drain time.
+        """
+        from app.services.execution_cancellation import (
+            ActiveExecutionRegistry,
+            _RegistryCommand,
+        )
+
+        ex_id = uuid.uuid4()
+        wf_id = uuid.uuid4()
+        enqueued_time = datetime(2026, 9, 17, 10, 5, tzinfo=timezone.utc)
+        drain_time = datetime(2026, 9, 17, 10, 30, tzinfo=timezone.utc)
+        cmd = _RegistryCommand(
+            action="start",
+            execution_id=ex_id,
+            workflow_id=wf_id,
+            started_at=datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc),
+            enqueued_at=enqueued_time,
+            inputs={"x": 1},
             trigger_source="api",
             actor_user_id=None,
             recoverable=True,
@@ -675,12 +721,13 @@ class DelayedRegistryWriteConflictTests(unittest.IsolatedAsyncioTestCase):
             executed_stmts.append((kind, execution_id))
             return _FakeResult(rowcount=1)
 
-        session = _FakeSession(handler)
+        # Non-terminal run (select returns False)
+        session = _FakeSession(handler, select_rows=[False])
         registry = ActiveExecutionRegistry()
-        await registry._apply_command(session, cmd, now)
+        await registry._apply_command(session, cmd, drain_time)
 
-        self.assertEqual(len(session.statements), 1)
-        kind, bound_id = session.statements[0]
+        self.assertEqual(len(executed_stmts), 1)
+        kind, bound_id = executed_stmts[0]
         self.assertEqual(kind, "insert")
         self.assertEqual(bound_id, ex_id)
 
