@@ -11,9 +11,11 @@ from app.models.schemas import (
 )
 from app.services.codex_followup_service import (
     build_codex_answer_output,
+    claim_codex_followup_for_answer,
     ensure_codex_followup_is_actionable,
     ensure_codex_followup_is_viewable,
     get_codex_followup_by_token,
+    refresh_codex_followup_after_lost_claim,
     resume_codex_followup_in_background,
 )
 
@@ -67,12 +69,30 @@ async def submit_codex_followup_answer(
         )
     ensure_codex_followup_is_actionable(followup)
 
-    followup.answer_text = payload.answer_text.strip()
+    answer_text = payload.answer_text.strip()
+    now = datetime.now(timezone.utc)
+    resolved_output = build_codex_answer_output(followup, answer_text=answer_text)
+
+    claimed = await claim_codex_followup_for_answer(
+        db,
+        followup,
+        answer_text=answer_text,
+        resolved_output=resolved_output,
+        answered_at=now,
+    )
+    if not claimed:
+        # Lost the race: another answer claimed first, or the request expired
+        # between the initial check and the write. Surface the same error a
+        # serialized caller would have seen.
+        raise await refresh_codex_followup_after_lost_claim(db, followup)
+
+    # The claim is exclusive, so mirroring the claimed state onto the session
+    # object and committing can no longer race another answer.
+    followup.answer_text = answer_text
     followup.status = "answered"
-    followup.answered_at = datetime.now(timezone.utc)
+    followup.answered_at = now
     followup.resume_error = None
-    followup.resolved_output = build_codex_answer_output(followup)
-    await db.flush()
+    followup.resolved_output = resolved_output
     await db.commit()
 
     background_tasks.add_task(resume_codex_followup_in_background, followup.id)

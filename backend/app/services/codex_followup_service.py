@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CodexFollowupRequest, ExecutionHistory, Workflow
@@ -67,12 +67,15 @@ def ensure_codex_followup_is_actionable(followup: CodexFollowupRequest) -> None:
         )
 
 
-def build_codex_answer_output(followup: CodexFollowupRequest) -> dict:
+def build_codex_answer_output(
+    followup: CodexFollowupRequest, *, answer_text: str | None = None
+) -> dict:
+    resolved_answer = answer_text if answer_text is not None else (followup.answer_text or "")
     return {
         "status": "answered",
         "summary": followup.summary,
         "question": followup.question,
-        "answerText": followup.answer_text or "",
+        "answerText": resolved_answer,
         "requestId": str(followup.id),
         "threadId": followup.thread_id,
         "workspacePath": followup.workspace_path,
@@ -249,6 +252,67 @@ async def get_codex_followup_by_token(db: AsyncSession, token: str) -> CodexFoll
         followup.status = "expired"
         await db.flush()
     return followup
+
+
+async def claim_codex_followup_for_answer(
+    db: AsyncSession,
+    followup: CodexFollowupRequest,
+    *,
+    answer_text: str,
+    resolved_output: dict,
+    answered_at: datetime | None = None,
+) -> bool:
+    """Atomically claim a pending Codex follow-up for this answer.
+
+    The status/expiry predicates live in the UPDATE itself, so exactly one
+    concurrent caller can win; the loser sees rowcount 0 instead of silently
+    overwriting the winner and scheduling a second resume.
+    """
+    now = answered_at or datetime.now(timezone.utc)
+    result = await db.execute(
+        update(CodexFollowupRequest)
+        .where(
+            CodexFollowupRequest.id == followup.id,
+            CodexFollowupRequest.status == "pending",
+            CodexFollowupRequest.expires_at > now,
+        )
+        .values(
+            answer_text=answer_text,
+            status="answered",
+            answered_at=now,
+            resume_error=None,
+            resolved_output=resolved_output,
+        )
+    )
+    return result.rowcount == 1
+
+
+async def refresh_codex_followup_after_lost_claim(
+    db: AsyncSession, followup: CodexFollowupRequest
+) -> HTTPException:
+    """Map a lost claim to the same error a serialized caller would have seen.
+
+    Re-reads only this row (populate_existing) instead of rolling back: the
+    shared request session also holds credentials, and any uncommitted work,
+    and rolling it back would break the rest of the request.
+    """
+    result = await db.execute(
+        select(CodexFollowupRequest)
+        .where(CodexFollowupRequest.id == followup.id)
+        .execution_options(populate_existing=True)
+    )
+    fresh = result.scalar_one_or_none()
+    if fresh is None:
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Codex follow-up not found"
+        )
+    now = datetime.now(timezone.utc)
+    if fresh.status == "expired" or fresh.expires_at < now:
+        return HTTPException(status_code=status.HTTP_410_GONE, detail="Codex link has expired")
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Codex follow-up has already been answered",
+    )
 
 
 async def resume_codex_followup_in_background(request_id: uuid.UUID) -> None:
