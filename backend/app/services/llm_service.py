@@ -34,6 +34,7 @@ from app.services.llm_transport import (
     LLMTransport,
     RequestOpts,
     ResponsesTransport,
+    ResumableProviderError,
     ToolResult,
     is_truncated_turn,
     parse_tool_arguments,
@@ -605,6 +606,40 @@ class _RoutedHistoryView:
         return self.working(self._last_limit)
 
 
+def gateway_protocol(
+    model: str, credential_type: CredentialType | None, base_url: str | None
+) -> str | None:
+    """The endpoint OpenCode serves ``model`` on; None for any other gateway or for Chat."""
+    if credential_type == CredentialType.custom and is_opencode_base_url(base_url):
+        protocol = opencode_model_protocol(model)
+        return protocol if protocol != "chat" else None
+    return None
+
+
+def resolve_transport_identity(
+    model: str,
+    credential_type: CredentialType | str | None,
+    base_url: str | None,
+    *,
+    use_responses_api: bool = False,
+    has_router: bool = False,
+) -> str:
+    """Return the history format / transport identity for an agent attempt."""
+    if has_router:
+        return "chat.completions"
+    cred_type = (
+        CredentialType(credential_type) if isinstance(credential_type, str) else credential_type
+    )
+    protocol = gateway_protocol(model, cred_type, base_url)
+    if protocol == "messages":
+        return "messages"
+    if protocol == "google":
+        return "generateContent"
+    if use_responses_api or protocol == "responses":
+        return "responses"
+    return "chat.completions"
+
+
 class LLMService:
     def __init__(
         self,
@@ -870,15 +905,18 @@ class LLMService:
     ) -> (
         ChatCompletionsTransport | ResponsesTransport | AnthropicMessagesTransport | GeminiTransport
     ):
-        if self.router is not None:
-            # The next routed turn can land on any model, so the history stays a plain message list.
-            return OpenAIChatTransport()
-        protocol = self._gateway_protocol(model, self.credential_type, self.base_url)
-        if protocol == "messages":
+        identity = resolve_transport_identity(
+            model,
+            self.credential_type,
+            self.base_url,
+            use_responses_api=self.use_responses_api,
+            has_router=(self.router is not None),
+        )
+        if identity == "messages":
             return AnthropicMessagesTransport()
-        if protocol == "google":
+        if identity == "generateContent":
             return GeminiTransport()
-        if self.use_responses_api or protocol == "responses":
+        if identity == "responses":
             return ResponsesTransport()
         return OpenAIChatTransport()
 
@@ -898,15 +936,7 @@ class LLMService:
             return True
         return credential_type == CredentialType.openai and bool(base_url)
 
-    @staticmethod
-    def _gateway_protocol(
-        model: str, credential_type: CredentialType | None, base_url: str | None
-    ) -> str | None:
-        """The endpoint OpenCode serves ``model`` on; None for any other gateway or for Chat."""
-        if credential_type == CredentialType.custom and is_opencode_base_url(base_url):
-            protocol = opencode_model_protocol(model)
-            return protocol if protocol != "chat" else None
-        return None
+    _gateway_protocol = staticmethod(gateway_protocol)
 
     def _record_trace(
         self,
@@ -1484,6 +1514,8 @@ class LLMService:
         # Without a router there is one window, so compression may replace the history.
         routed_view = _RoutedHistoryView(history) if self.router is not None else None
 
+        tools_executed_this_invocation = 0
+
         def _sent_history() -> Any:
             return routed_view.sent() if routed_view is not None else history
 
@@ -1500,6 +1532,9 @@ class LLMService:
             invocation_completion_tokens = total_completion_tokens - initial_completion_tokens
             invocation_total_tokens = invocation_prompt_tokens + invocation_completion_tokens
             return invocation_prompt_tokens, invocation_completion_tokens, invocation_total_tokens
+
+        def _invocation_elapsed_ms() -> float:
+            return max(0.0, total_elapsed_ms - initial_elapsed_ms)
 
         def _build_error_result(
             error_text: str,
@@ -1546,7 +1581,7 @@ class LLMService:
                 request=_trace_request(),
                 response=result,
                 error=error_text,
-                elapsed_ms=round(total_elapsed_ms, 2),
+                elapsed_ms=round(_invocation_elapsed_ms(), 2),
                 prompt_tokens=inv_prompt,
                 completion_tokens=inv_completion,
                 total_tokens=inv_total,
@@ -1701,12 +1736,28 @@ class LLMService:
                     request=_trace_request(),
                     response=None,
                     error=str(exc),
-                    elapsed_ms=round(elapsed_ms, 2),
+                    elapsed_ms=round(
+                        max(0.0, total_elapsed_ms - initial_elapsed_ms) + elapsed_ms, 2
+                    ),
                     prompt_tokens=inv_prompt if inv_total else None,
                     completion_tokens=inv_completion if inv_total else None,
                     total_tokens=inv_total if inv_total else None,
                     binding=binding,
                 )
+                if tools_executed_this_invocation > 0:
+                    accumulated_elapsed_ms = total_elapsed_ms + elapsed_ms
+                    remaining_iterations = max(max_tool_iterations - iteration, 1)
+                    dumped_history = run_transport.dump(history)
+                    raise ResumableProviderError(
+                        exc,
+                        history=dumped_history,
+                        tool_calls=tool_calls_collected,
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        elapsed_ms=accumulated_elapsed_ms,
+                        remaining_iterations=remaining_iterations,
+                        transport_name=run_transport.name,
+                    ) from exc
                 raise
             elapsed_ms = (time.time() - start_time) * 1000
             self._record_turn_timing(
@@ -1753,7 +1804,7 @@ class LLMService:
                     request=_trace_request(),
                     response=result,
                     error=None,
-                    elapsed_ms=round(total_elapsed_ms, 2),
+                    elapsed_ms=round(_invocation_elapsed_ms(), 2),
                     prompt_tokens=inv_prompt,
                     completion_tokens=inv_completion,
                     total_tokens=inv_total,
@@ -1803,7 +1854,7 @@ class LLMService:
                     request=_trace_request(),
                     response=result,
                     error=None,
-                    elapsed_ms=round(total_elapsed_ms, 2),
+                    elapsed_ms=round(_invocation_elapsed_ms(), 2),
                     prompt_tokens=inv_prompt,
                     completion_tokens=inv_completion,
                     total_tokens=inv_total,
@@ -1996,7 +2047,7 @@ class LLMService:
                     request=_trace_request(),
                     response=result,
                     error=None,
-                    elapsed_ms=round(total_elapsed_ms, 2),
+                    elapsed_ms=round(_invocation_elapsed_ms(), 2),
                     prompt_tokens=inv_prompt,
                     completion_tokens=inv_completion,
                     total_tokens=inv_total,
@@ -2074,6 +2125,8 @@ class LLMService:
                         result_str = json.dumps({"error": f"Unknown tool: {name}"})
                         tool_result = {"error": f"Unknown tool: {name}"}
                     else:
+                        nonlocal tools_executed_this_invocation
+                        tools_executed_this_invocation += 1
                         try:
                             tool_result = await asyncio.to_thread(
                                 tool_executor,
@@ -2433,7 +2486,7 @@ class LLMService:
                             request=_trace_request(),
                             response=result,
                             error=None,
-                            elapsed_ms=round(total_elapsed_ms, 2),
+                            elapsed_ms=round(_invocation_elapsed_ms(), 2),
                             prompt_tokens=inv_prompt,
                             completion_tokens=inv_completion,
                             total_tokens=inv_total,
@@ -2463,7 +2516,7 @@ class LLMService:
             request=_trace_request(),
             response=result,
             error=None,
-            elapsed_ms=round(total_elapsed_ms, 2),
+            elapsed_ms=round(_invocation_elapsed_ms(), 2),
             prompt_tokens=inv_prompt,
             completion_tokens=inv_completion,
             total_tokens=inv_total,

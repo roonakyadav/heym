@@ -366,23 +366,24 @@ class WorkflowTimeoutError(WorkflowCancelledError):
 def run_async(coro):
     try:
         loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-
-            # Preserve the active Agent/workflow span when we must hop to a worker
-            # thread to host a fresh asyncio.run() loop.
-            otel_ctx = tracing.capture_context()
-
-            def _run_with_otel() -> object:
-                return tracing.run_with_context(otel_ctx, lambda: asyncio.run(coro))
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_run_with_otel)
-                return future.result()
-        else:
-            return loop.run_until_complete(coro)
     except RuntimeError:
         return asyncio.run(coro)
+
+    if loop.is_running():
+        import concurrent.futures
+
+        # Preserve the active Agent/workflow span when we must hop to a worker
+        # thread to host a fresh asyncio.run() loop.
+        otel_ctx = tracing.capture_context()
+
+        def _run_with_otel() -> object:
+            return tracing.run_with_context(otel_ctx, lambda: asyncio.run(coro))
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(_run_with_otel)
+            return future.result()
+    else:
+        return loop.run_until_complete(coro)
 
 
 @dataclass(frozen=True)
@@ -5342,6 +5343,10 @@ class WorkflowExecutor:
         from app.db.session import SessionLocal
         from app.services.encryption import decrypt_config
         from app.services.llm_service import execute_llm, execute_llm_with_tools
+        from app.services.llm_transport import (
+            ResumableProviderError,
+            prepare_resumable_fallback_attempt,
+        )
 
         if guardrails_config and guardrails_config.get("enabled"):
             from app.services.guardrails_service import (
@@ -5715,6 +5720,9 @@ class WorkflowExecutor:
         agent_last_error: Exception | None = None
         agent_last_model = model
         agent_last_trace_id: str | None = None
+        resumable_state: ResumableProviderError | None = None
+        resumable_primary_cid: str | None = None
+        last_collected_tool_calls: list[dict[str, Any]] | None = None
         for attempt_idx, (cid, mod) in enumerate(attempts):
             credential_type = None
             credential_name = ""
@@ -5805,6 +5813,31 @@ class WorkflowExecutor:
                 else None
             )
 
+            (
+                resumable_state,
+                attempt_resume_messages,
+                attempt_resume_tool_calls,
+                attempt_resume_elapsed_ms,
+                attempt_resume_prompt_tokens,
+                attempt_resume_completion_tokens,
+                attempt_max_tool_iterations,
+            ) = prepare_resumable_fallback_attempt(
+                resumable_state,
+                primary_credential_id=resumable_primary_cid,
+                attempt_credential_id=str(cid) if cid is not None else None,
+                model=mod,
+                credential_type=credential_type,
+                base_url=base_url,
+                use_responses_api=bool(agent_use_responses_api),
+                has_router=(router is not None),
+                default_messages=resume_messages,
+                default_tool_calls=resume_tool_calls,
+                default_elapsed_ms=resume_elapsed_ms,
+                default_prompt_tokens=resume_prompt_tokens,
+                default_completion_tokens=resume_completion_tokens,
+                default_max_iterations=resume_max_tool_iterations,
+            )
+
             try:
                 if merged_tools:
 
@@ -5823,7 +5856,7 @@ class WorkflowExecutor:
                             user_message=user_message,
                             tools=merged_tools,
                             tool_timeout_seconds=tool_timeout_seconds,
-                            max_tool_iterations=resume_max_tool_iterations,
+                            max_tool_iterations=attempt_max_tool_iterations,
                             temperature=temperature,
                             reasoning_effort=reasoning_effort,
                             max_tokens=max_tokens,
@@ -5834,11 +5867,11 @@ class WorkflowExecutor:
                             skills_included=skills_used or None,
                             on_tool_call=on_tool_call,
                             tool_executor=custom_tool_executor,
-                            initial_messages=resume_messages,
-                            initial_tool_calls=resume_tool_calls,
-                            initial_elapsed_ms=resume_elapsed_ms,
-                            initial_prompt_tokens=resume_prompt_tokens,
-                            initial_completion_tokens=resume_completion_tokens,
+                            initial_messages=attempt_resume_messages,
+                            initial_tool_calls=attempt_resume_tool_calls,
+                            initial_elapsed_ms=attempt_resume_elapsed_ms,
+                            initial_prompt_tokens=attempt_resume_prompt_tokens,
+                            initial_completion_tokens=attempt_resume_completion_tokens,
                             should_abort=should_abort_tool_loop,
                             request_timeout=request_timeout_seconds,
                             extra_body=agent_extra_body,
@@ -5871,10 +5904,19 @@ class WorkflowExecutor:
                             repair_json_output=json_output_enabled,
                         )
                     )
+            except ResumableProviderError as rpe:
+                agent_last_error = rpe.original_exception
+                agent_last_model = mod
+                agent_last_trace_id = self._latest_trace_id(trace_context) or agent_last_trace_id
+                resumable_state = rpe
+                resumable_primary_cid = str(cid) if cid is not None else None
+                last_collected_tool_calls = copy.deepcopy(rpe.tool_calls)
+                continue
             except Exception as e:
                 agent_last_error = e
                 agent_last_model = mod
                 agent_last_trace_id = self._latest_trace_id(trace_context) or agent_last_trace_id
+                resumable_state = None
                 continue
 
             result = dict(result)
@@ -5966,6 +6008,10 @@ class WorkflowExecutor:
         }
         if agent_last_trace_id:
             error_output["_trace_id"] = agent_last_trace_id
+        if last_collected_tool_calls:
+            error_output["tool_calls"] = copy.deepcopy(last_collected_tool_calls)
+        elif resume_tool_calls:
+            error_output["tool_calls"] = copy.deepcopy(resume_tool_calls)
         return error_output
 
     def _wrap_value(self, value: object) -> object:

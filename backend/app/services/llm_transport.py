@@ -142,6 +142,132 @@ class LLMTransport(Protocol):
     def trace_request(self, history: Any, tools: list[dict[str, Any]] | None) -> dict[str, Any]: ...
 
 
+class ResumableProviderError(RuntimeError):
+    """Raised when a provider call fails after one or more tools have executed in the invocation."""
+
+    def __init__(
+        self,
+        original_exception: Exception,
+        *,
+        history: list[dict[str, Any]],
+        tool_calls: list[dict[str, Any]],
+        prompt_tokens: int,
+        completion_tokens: int,
+        elapsed_ms: float,
+        remaining_iterations: int,
+        transport_name: str,
+    ) -> None:
+        super().__init__(str(original_exception))
+        self.original_exception = original_exception
+        self.history = copy.deepcopy(history)
+        self.tool_calls = copy.deepcopy(tool_calls)
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.elapsed_ms = elapsed_ms
+        self.remaining_iterations = remaining_iterations
+        self.transport_name = transport_name
+
+
+def are_transports_compatible(source_transport: str, target_transport: str) -> bool:
+    """Return True if target_transport can consume history dumped by source_transport."""
+    if source_transport != target_transport:
+        return False
+    return source_transport in {"chat.completions", "responses", "messages", "generateContent"}
+
+
+def isolate_responses_history_reasoning(
+    history: list[dict[str, Any]],
+    *,
+    source_credential_id: str | None,
+    target_credential_id: str | None,
+) -> list[dict[str, Any]]:
+    """Remove encrypted reasoning items when switching credentials on the Responses API."""
+    if source_credential_id == target_credential_id:
+        return copy.deepcopy(history)
+    filtered: list[dict[str, Any]] = []
+    for item in history:
+        item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        if item_type == "reasoning":
+            continue
+        filtered.append(copy.deepcopy(item))
+    return filtered
+
+
+def prepare_resumable_fallback_attempt(
+    resumable_state: ResumableProviderError | None,
+    *,
+    primary_credential_id: str | None,
+    attempt_credential_id: str | None,
+    model: str,
+    credential_type: Any,
+    base_url: str | None,
+    use_responses_api: bool = False,
+    has_router: bool = False,
+    default_messages: list[dict[str, Any]] | None,
+    default_tool_calls: list[dict[str, Any]] | None,
+    default_elapsed_ms: float,
+    default_prompt_tokens: int,
+    default_completion_tokens: int,
+    default_max_iterations: int,
+) -> tuple[
+    ResumableProviderError | None,
+    list[dict[str, Any]] | None,
+    list[dict[str, Any]] | None,
+    float,
+    int,
+    int,
+    int,
+]:
+    """Inspect transport compatibility and return resume parameters for the next attempt."""
+    if resumable_state is None:
+        return (
+            None,
+            default_messages,
+            default_tool_calls,
+            default_elapsed_ms,
+            default_prompt_tokens,
+            default_completion_tokens,
+            default_max_iterations,
+        )
+
+    from app.services.llm_service import resolve_transport_identity
+
+    fallback_transport = resolve_transport_identity(
+        model,
+        credential_type,
+        base_url,
+        use_responses_api=use_responses_api,
+        has_router=has_router,
+    )
+    if are_transports_compatible(resumable_state.transport_name, fallback_transport):
+        history = copy.deepcopy(resumable_state.history)
+        if fallback_transport == "responses":
+            history = isolate_responses_history_reasoning(
+                history,
+                source_credential_id=primary_credential_id,
+                target_credential_id=attempt_credential_id,
+            )
+        return (
+            resumable_state,
+            history,
+            copy.deepcopy(resumable_state.tool_calls),
+            resumable_state.elapsed_ms,
+            resumable_state.prompt_tokens,
+            resumable_state.completion_tokens,
+            resumable_state.remaining_iterations,
+        )
+
+    return (
+        None,
+        default_messages,
+        default_tool_calls,
+        default_elapsed_ms,
+        default_prompt_tokens,
+        default_completion_tokens,
+        default_max_iterations,
+    )
+
+
 class ModelProtocolError(RuntimeError):
     """The gateway does not serve this model on the endpoint the node called."""
 
