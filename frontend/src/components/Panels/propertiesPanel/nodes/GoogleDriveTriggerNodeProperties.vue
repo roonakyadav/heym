@@ -7,9 +7,16 @@ import Select from "@/components/ui/Select.vue";
 import { driveEventOptions, selectedEvents, toggleEvent } from "@/lib/googleTriggerConfig";
 import type { GoogleTriggerEvent } from "@/types/workflow";
 import { usePropertiesPanelContext } from "../usePropertiesPanelController";
+import { useTriggerPollInterval } from "./useTriggerPollInterval";
 
 const { selectedNode, isWorkflowOwner, googleDriveCredentialOptions, updateNodeData } =
   usePropertiesPanelContext();
+
+const {
+  pollIntervalDraft,
+  pollIntervalError,
+  handlePollIntervalInput,
+} = useTriggerPollInterval(selectedNode, updateNodeData, 1);
 
 const scopeOptions = [
   { value: "folder", label: "Files in a folder" },
@@ -144,12 +151,19 @@ function setEvent(event: GoogleTriggerEvent, enabled: boolean): void {
         <Label for="gdt-poll-interval">Poll Interval (Minutes)</Label>
         <Input
           id="gdt-poll-interval"
-          :model-value="String(selectedNode.data.pollIntervalMinutes ?? 1)"
+          :model-value="pollIntervalDraft"
           type="number"
           min="1"
           step="1"
-          @update:model-value="updateNodeData('pollIntervalMinutes', Number.parseInt($event, 10) || 1)"
+          :error="Boolean(pollIntervalError)"
+          @update:model-value="handlePollIntervalInput"
         />
+        <p
+          v-if="pollIntervalError"
+          class="text-xs text-destructive"
+        >
+          {{ pollIntervalError }}
+        </p>
         <p class="text-xs text-muted-foreground">
           The first poll records the folder as it is. After that, each change starts one run.
         </p>

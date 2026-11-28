@@ -4,12 +4,19 @@ import Input from "@/components/ui/Input.vue";
 import Label from "@/components/ui/Label.vue";
 import Select from "@/components/ui/Select.vue";
 import { usePropertiesPanelContext } from "../usePropertiesPanelController";
+import { useTriggerPollInterval } from "./useTriggerPollInterval";
 
 const {
   selectedNode,
   imapTriggerCredentialOptions,
   updateNodeData,
 } = usePropertiesPanelContext();
+
+const {
+  pollIntervalDraft,
+  pollIntervalError,
+  handlePollIntervalInput,
+} = useTriggerPollInterval(selectedNode, updateNodeData, 5);
 </script>
 
 <template>
@@ -42,12 +49,19 @@ const {
         <Label for="imap-poll-interval">Poll Interval (Minutes)</Label>
         <Input
           id="imap-poll-interval"
-          :model-value="String(selectedNode.data.pollIntervalMinutes ?? 5)"
+          :model-value="pollIntervalDraft"
           type="number"
           min="1"
           step="1"
-          @update:model-value="updateNodeData('pollIntervalMinutes', Number.parseInt($event, 10) || 1)"
+          :error="Boolean(pollIntervalError)"
+          @update:model-value="handlePollIntervalInput"
         />
+        <p
+          v-if="pollIntervalError"
+          class="text-xs text-destructive"
+        >
+          {{ pollIntervalError }}
+        </p>
         <p class="text-xs text-muted-foreground">
           Minimum 1 minute. First poll baselines the current inbox, then only newer emails trigger runs.
         </p>

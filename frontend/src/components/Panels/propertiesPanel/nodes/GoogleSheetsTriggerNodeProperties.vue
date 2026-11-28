@@ -7,9 +7,16 @@ import Select from "@/components/ui/Select.vue";
 import { SHEETS_EVENT_OPTIONS, selectedEvents, toggleEvent } from "@/lib/googleTriggerConfig";
 import type { GoogleTriggerEvent } from "@/types/workflow";
 import { usePropertiesPanelContext } from "../usePropertiesPanelController";
+import { useTriggerPollInterval } from "./useTriggerPollInterval";
 
 const { selectedNode, isWorkflowOwner, googleSheetsCredentialOptions, updateNodeData } =
   usePropertiesPanelContext();
+
+const {
+  pollIntervalDraft,
+  pollIntervalError,
+  handlePollIntervalInput,
+} = useTriggerPollInterval(selectedNode, updateNodeData, 1);
 
 const events = computed<GoogleTriggerEvent[]>(() => selectedEvents(selectedNode.value?.data.gstEvents));
 const hasHeader = computed<boolean>(() => selectedNode.value?.data.gstHasHeader !== false);
@@ -139,12 +146,19 @@ function setEvent(event: GoogleTriggerEvent, enabled: boolean): void {
         <Label for="gst-poll-interval">Poll Interval (Minutes)</Label>
         <Input
           id="gst-poll-interval"
-          :model-value="String(selectedNode.data.pollIntervalMinutes ?? 1)"
+          :model-value="pollIntervalDraft"
           type="number"
           min="1"
           step="1"
-          @update:model-value="updateNodeData('pollIntervalMinutes', Number.parseInt($event, 10) || 1)"
+          :error="Boolean(pollIntervalError)"
+          @update:model-value="handlePollIntervalInput"
         />
+        <p
+          v-if="pollIntervalError"
+          class="text-xs text-destructive"
+        >
+          {{ pollIntervalError }}
+        </p>
         <p class="text-xs text-muted-foreground">
           The first poll records the sheet as it is. Heym keeps only fingerprints of cells, never
           their values.

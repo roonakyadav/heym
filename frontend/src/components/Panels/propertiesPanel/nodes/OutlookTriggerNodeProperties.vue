@@ -15,8 +15,15 @@ import {
 } from "@/lib/outlookTriggerConfig";
 import { usePropertiesPanelContext } from "../usePropertiesPanelController";
 import { useOutlookTriggerOptions } from "./useOutlookTriggerOptions";
+import { useTriggerPollInterval } from "./useTriggerPollInterval";
 
 const { selectedNode, isWorkflowOwner, updateNodeData } = usePropertiesPanelContext();
+
+const {
+  pollIntervalDraft,
+  pollIntervalError,
+  handlePollIntervalInput,
+} = useTriggerPollInterval(selectedNode, updateNodeData, 1);
 
 const credentialId = computed<string>(() => String(selectedNode.value?.data.credentialId ?? ""));
 const { credentials, folders, addresses, loadingAccount, accountError } =
@@ -216,12 +223,19 @@ function toggleAddress(address: string): void {
         <Label for="outlook-poll-interval">Poll Interval (Minutes)</Label>
         <Input
           id="outlook-poll-interval"
-          :model-value="String(selectedNode.data.pollIntervalMinutes ?? 1)"
+          :model-value="pollIntervalDraft"
           type="number"
           min="1"
           step="1"
-          @update:model-value="updateNodeData('pollIntervalMinutes', Number.parseInt($event, 10) || 1)"
+          :error="Boolean(pollIntervalError)"
+          @update:model-value="handlePollIntervalInput"
         />
+        <p
+          v-if="pollIntervalError"
+          class="text-xs text-destructive"
+        >
+          {{ pollIntervalError }}
+        </p>
         <p class="text-xs text-muted-foreground">
           The first poll records where the mailbox is; only newer email starts runs.
         </p>
