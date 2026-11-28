@@ -11,6 +11,7 @@ import Textarea from "@/components/ui/Textarea.vue";
 import type { GuardrailCategory, ReasoningEffort } from "@/types/workflow";
 import { usePropertiesPanelContext } from "../usePropertiesPanelController";
 import { useResponsesApiCapability } from "../useResponsesApiCapability";
+import { parseTemperatureInput } from "./nodeTemperature";
 
 const {
   workflowStore,
@@ -433,11 +434,11 @@ function handleResponsesApiChange(enabled: boolean): void {
           <Label>Temperature</Label>
           <Input
             type="number"
-            :model-value="selectedNode.data.temperature || 0.7"
+            :model-value="selectedNode.data.temperature ?? 0.7"
             min="0"
             max="2"
             step="0.1"
-            @update:model-value="updateNodeData('temperature', parseFloat($event as string))"
+            @update:model-value="updateNodeData('temperature', parseTemperatureInput($event as string))"
           />
         </div>
       </div>
