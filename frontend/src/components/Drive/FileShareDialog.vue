@@ -2,7 +2,7 @@
 import { onUnmounted, ref, watch } from "vue";
 import { Check, Copy, Link, Trash2, Users } from "lucide-vue-next";
 
-import type { FileAccessToken, CreateShareRequest } from "@/types/file";
+import type { FileAccessToken } from "@/types/file";
 
 import Button from "@/components/ui/Button.vue";
 import Dialog from "@/components/ui/Dialog.vue";
@@ -11,6 +11,10 @@ import Label from "@/components/ui/Label.vue";
 import { filesApi } from "@/services/api";
 import { formatDate } from "@/lib/utils";
 import { onDismissOverlays, pushOverlayState } from "@/composables/useOverlayBackHandler";
+import {
+  buildCreateSharePayload,
+  validateShareLimits,
+} from "./fileShareValidation";
 
 const props = defineProps<{
   open: boolean;
@@ -27,6 +31,7 @@ const emit = defineEmits<{
 const shares = ref<FileAccessToken[]>([]);
 const loading = ref(false);
 const error = ref("");
+const fieldErrors = ref<{ expiresHours?: string; maxDownloads?: string }>({});
 const copied = ref(false);
 
 const expiresHours = ref<string>("");
@@ -43,6 +48,8 @@ watch(
   async (open) => {
     if (open) {
       teamSharingEnabled.value = props.sharedWithMyTeams;
+      fieldErrors.value = {};
+      error.value = "";
       pushOverlayState();
       unsubDismiss = onDismissOverlays(() => emit("close"));
       await loadShares();
@@ -57,7 +64,7 @@ onUnmounted(() => {
   unsubDismiss?.();
 });
 
-async function loadShares() {
+async function loadShares(): Promise<void> {
   loading.value = true;
   error.value = "";
   try {
@@ -69,15 +76,23 @@ async function loadShares() {
   }
 }
 
-async function createShare() {
-  creating.value = true;
+async function createShare(): Promise<void> {
   error.value = "";
-  try {
-    const data: CreateShareRequest = {};
-    if (expiresHours.value) data.expires_hours = parseInt(expiresHours.value);
-    if (basicAuthPassword.value) data.basic_auth_password = basicAuthPassword.value;
-    if (maxDownloads.value) data.max_downloads = parseInt(maxDownloads.value);
+  const validation = validateShareLimits({
+    expiresHours: expiresHours.value,
+    maxDownloads: maxDownloads.value,
+  });
 
+  if (!validation.isValid) {
+    error.value = validation.errorMessage ?? "Invalid share limits";
+    fieldErrors.value = validation.errors;
+    return;
+  }
+  fieldErrors.value = {};
+
+  creating.value = true;
+  try {
+    const data = buildCreateSharePayload(validation, basicAuthPassword.value);
     await filesApi.createShare(props.fileId, data);
     expiresHours.value = "";
     basicAuthPassword.value = "";
@@ -161,9 +176,18 @@ async function copyLink(url: string) {
             <Input
               v-model="expiresHours"
               type="number"
+              min="1"
+              step="1"
               placeholder="No expiry"
               class="text-xs"
+              :error="Boolean(fieldErrors.expiresHours)"
             />
+            <p
+              v-if="fieldErrors.expiresHours"
+              class="text-[11px] text-destructive mt-1"
+            >
+              {{ fieldErrors.expiresHours }}
+            </p>
           </div>
           <div>
             <Label class="text-xs">Password</Label>
@@ -179,9 +203,18 @@ async function copyLink(url: string) {
             <Input
               v-model="maxDownloads"
               type="number"
+              min="1"
+              step="1"
               placeholder="Unlimited"
               class="text-xs"
+              :error="Boolean(fieldErrors.maxDownloads)"
             />
+            <p
+              v-if="fieldErrors.maxDownloads"
+              class="text-[11px] text-destructive mt-1"
+            >
+              {{ fieldErrors.maxDownloads }}
+            </p>
           </div>
         </div>
         <Button

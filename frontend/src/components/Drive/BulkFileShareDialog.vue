@@ -2,14 +2,16 @@
 import { onUnmounted, ref, watch } from "vue";
 import { Link, Users } from "lucide-vue-next";
 
-import type { CreateShareRequest } from "@/types/file";
-
 import Button from "@/components/ui/Button.vue";
 import Dialog from "@/components/ui/Dialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Label from "@/components/ui/Label.vue";
 import { filesApi } from "@/services/api";
 import { onDismissOverlays, pushOverlayState } from "@/composables/useOverlayBackHandler";
+import {
+  buildCreateSharePayload,
+  validateShareLimits,
+} from "./fileShareValidation";
 
 const props = defineProps<{
   open: boolean;
@@ -22,6 +24,7 @@ const emit = defineEmits<{
 }>();
 
 const error = ref("");
+const fieldErrors = ref<{ expiresHours?: string; maxDownloads?: string }>({});
 const result = ref<{ succeeded: number; failed: number } | null>(null);
 const expiresHours = ref<string>("");
 const basicAuthPassword = ref("");
@@ -38,6 +41,7 @@ watch(
     if (open) {
       targetIds.value = [...props.fileIds];
       error.value = "";
+      fieldErrors.value = {};
       result.value = null;
       expiresHours.value = "";
       basicAuthPassword.value = "";
@@ -71,15 +75,24 @@ async function setTeamSharing(enabled: boolean): Promise<void> {
 }
 
 async function createShareLinks(): Promise<void> {
-  busy.value = true;
   error.value = "";
   result.value = null;
-  try {
-    const data: CreateShareRequest = {};
-    if (expiresHours.value) data.expires_hours = parseInt(expiresHours.value);
-    if (basicAuthPassword.value) data.basic_auth_password = basicAuthPassword.value;
-    if (maxDownloads.value) data.max_downloads = parseInt(maxDownloads.value);
 
+  const validation = validateShareLimits({
+    expiresHours: expiresHours.value,
+    maxDownloads: maxDownloads.value,
+  });
+
+  if (!validation.isValid) {
+    error.value = validation.errorMessage ?? "Invalid share limits";
+    fieldErrors.value = validation.errors;
+    return;
+  }
+  fieldErrors.value = {};
+
+  busy.value = true;
+  try {
+    const data = buildCreateSharePayload(validation, basicAuthPassword.value);
     const res = await filesApi.bulkCreateShare(targetIds.value, data);
     result.value = { succeeded: res.succeeded.length, failed: res.failed.length };
     expiresHours.value = "";
@@ -140,9 +153,18 @@ async function createShareLinks(): Promise<void> {
             <Input
               v-model="expiresHours"
               type="number"
+              min="1"
+              step="1"
               placeholder="No expiry"
               class="text-xs"
+              :error="Boolean(fieldErrors.expiresHours)"
             />
+            <p
+              v-if="fieldErrors.expiresHours"
+              class="text-[11px] text-destructive mt-1"
+            >
+              {{ fieldErrors.expiresHours }}
+            </p>
           </div>
           <div>
             <Label class="text-xs">Password</Label>
@@ -158,9 +180,18 @@ async function createShareLinks(): Promise<void> {
             <Input
               v-model="maxDownloads"
               type="number"
+              min="1"
+              step="1"
               placeholder="Unlimited"
               class="text-xs"
+              :error="Boolean(fieldErrors.maxDownloads)"
             />
+            <p
+              v-if="fieldErrors.maxDownloads"
+              class="text-[11px] text-destructive mt-1"
+            >
+              {{ fieldErrors.maxDownloads }}
+            </p>
           </div>
         </div>
         <Button
