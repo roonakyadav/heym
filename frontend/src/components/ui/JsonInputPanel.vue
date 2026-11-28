@@ -129,13 +129,10 @@ function syncSelectiveToJSON(): void {
 
 function handleFormat(): void {
   try {
-    const parsed = parseJSON(props.modelValue);
-    const current = parseJSON(props.modelValue);
-    const isFormatted = JSON.stringify(current) === JSON.stringify(parsed, null, 2);
-    const result = isFormatted ? JSON.stringify(parsed) : JSON.stringify(parsed, null, 2);
-    emit("update:modelValue", result);
+    const parsed = JSON.parse(props.modelValue);
+    emit("update:modelValue", JSON.stringify(parsed, null, 2));
   } catch {
-    // Silently fail on invalid JSON
+    // Leave original text untouched when parsing fails (e.g. invalid JSON or expression templates)
   }
 }
 
